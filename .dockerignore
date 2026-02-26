@@ -1,0 +1,9 @@
+node_modules
+frontend/node_modules
+frontend/dist
+__pycache__
+*.pyc
+.git
+.env.example
+data/price_cache.json
+data/bs_cache.json

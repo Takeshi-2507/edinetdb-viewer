@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: edinetdb-viewer
+    runtime: docker
+    plan: free
+    envVars:
+      - key: EDINET_API_KEY
+        sync: false

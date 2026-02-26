@@ -1,0 +1,13 @@
+node_modules/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.env
+data/price_cache.json
+data/bs_cache.json
+.DS_Store
+*.swp
+nul
+data/edinetdb.sqlite
+data/text_blocks_sample.json
