@@ -1,0 +1,56 @@
+name: Nightly EDINET Sync
+
+on:
+  schedule:
+    # JST 03:00 = UTC 18:00 (前日)
+    - cron: '0 18 * * *'
+  workflow_dispatch:  # 手動実行も可能
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install httpx python-dotenv
+
+      - name: Run collector
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+        run: python backend/collector.py --concurrency 3
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet data/edinet.db; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes to DB"
+          else
+            SIZE=$(du -h data/edinet.db | cut -f1)
+            COUNT=$(sqlite3 data/edinet.db "SELECT COUNT(*) FROM companies")
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "DB updated: ${SIZE}, ${COUNT} companies"
+          fi
+
+      - name: Commit & Push
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/edinet.db
+          git commit -m "chore: nightly EDINET sync $(date -u +%Y-%m-%d)
+
+          Automated data sync via GitHub Actions"
+          git push
