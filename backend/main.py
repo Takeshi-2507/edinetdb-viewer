@@ -1085,6 +1085,37 @@ def sync_log(limit: int = Query(10, ge=1, le=50)) -> list[dict]:
 from pydantic import BaseModel
 
 
+def _ensure_demo_trades_table():
+    """demo_trades テーブルを device_id 付きで確保"""
+    with get_db(readonly=False) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS demo_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT DEFAULT '',
+                securities_code TEXT NOT NULL,
+                company_name TEXT,
+                trade_type TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                price REAL NOT NULL,
+                quantity INTEGER NOT NULL,
+                memo TEXT,
+                created_at TEXT
+            )
+        """)
+        # 既存テーブルに device_id がない場合は追加
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(demo_trades)").fetchall()]
+        if "device_id" not in cols:
+            conn.execute("ALTER TABLE demo_trades ADD COLUMN device_id TEXT DEFAULT ''")
+        conn.commit()
+
+
+# サーバー起動時にテーブルを確保
+try:
+    _ensure_demo_trades_table()
+except Exception:
+    pass  # DB未作成の場合はスキップ
+
+
 class TradeRequest(BaseModel):
     securities_code: str
     company_name: str | None = None
@@ -1093,14 +1124,16 @@ class TradeRequest(BaseModel):
     price: float
     quantity: int
     memo: str | None = None
+    device_id: str | None = None
 
 
 @app.get("/api/demo-trades")
-def list_trades() -> list[dict]:
-    """デモトレード一覧"""
+def list_trades(device_id: str = Query("", description="端末ID")) -> list[dict]:
+    """デモトレード一覧（端末ごと）"""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM demo_trades ORDER BY trade_date DESC, id DESC"
+            "SELECT * FROM demo_trades WHERE device_id = ? ORDER BY trade_date DESC, id DESC",
+            (device_id,),
         ).fetchall()
     return [row_to_dict(r) for r in rows]
 
@@ -1109,12 +1142,13 @@ def list_trades() -> list[dict]:
 def create_trade(req: TradeRequest) -> dict:
     """デモトレード登録"""
     from datetime import datetime, timezone
+    dev_id = req.device_id or ""
     with get_db(readonly=False) as conn:
         conn.execute(
             """INSERT INTO demo_trades
-               (securities_code, company_name, trade_type, trade_date, price, quantity, memo, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (req.securities_code, req.company_name, req.trade_type,
+               (device_id, securities_code, company_name, trade_type, trade_date, price, quantity, memo, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (dev_id, req.securities_code, req.company_name, req.trade_type,
              req.trade_date, req.price, req.quantity, req.memo,
              datetime.now(timezone.utc).isoformat()),
         )
@@ -1123,20 +1157,21 @@ def create_trade(req: TradeRequest) -> dict:
 
 
 @app.delete("/api/demo-trades/{trade_id}")
-def delete_trade(trade_id: int) -> dict:
-    """デモトレード削除"""
+def delete_trade(trade_id: int, device_id: str = Query("", description="端末ID")) -> dict:
+    """デモトレード削除（端末IDチェック）"""
     with get_db(readonly=False) as conn:
-        conn.execute("DELETE FROM demo_trades WHERE id = ?", (trade_id,))
+        conn.execute("DELETE FROM demo_trades WHERE id = ? AND device_id = ?", (trade_id, device_id))
         conn.commit()
     return {"status": "ok"}
 
 
 @app.get("/api/demo-portfolio")
-def demo_portfolio() -> dict:
-    """デモポートフォリオ（現在の保有状況と損益）"""
+def demo_portfolio(device_id: str = Query("", description="端末ID")) -> dict:
+    """デモポートフォリオ（現在の保有状況と損益 - 端末ごと）"""
     with get_db() as conn:
         trades = conn.execute(
-            "SELECT * FROM demo_trades ORDER BY trade_date ASC, id ASC"
+            "SELECT * FROM demo_trades WHERE device_id = ? ORDER BY trade_date ASC, id ASC",
+            (device_id,),
         ).fetchall()
 
     # 銘柄ごとに集計
@@ -1267,14 +1302,15 @@ def company_search(q: str = Query(..., min_length=1)) -> list[dict]:
 # --------------- 売り時アラート API ---------------
 
 @app.get("/api/alerts")
-def get_alerts() -> dict:
-    """保有銘柄の売り時アラートを生成"""
+def get_alerts(device_id: str = Query("", description="端末ID")) -> dict:
+    """保有銘柄の売り時アラートを生成（端末ごと）"""
     from datetime import datetime, timezone
 
     with get_db() as conn:
         # デモトレード保有数量を集計
         trades = conn.execute(
-            "SELECT * FROM demo_trades ORDER BY trade_date ASC, id ASC"
+            "SELECT * FROM demo_trades WHERE device_id = ? ORDER BY trade_date ASC, id ASC",
+            (device_id,),
         ).fetchall()
 
     holdings: dict[str, dict] = {}

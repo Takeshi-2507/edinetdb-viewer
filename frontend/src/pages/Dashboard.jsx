@@ -1,18 +1,32 @@
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { Database, Building2, FileText, Clock } from 'lucide-react'
 
 function StatCard({ icon: Icon, label, value, sub }) {
   return (
-    <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+    <div className="card" style={{
+      display: 'flex', alignItems: 'center', gap: 16,
+      borderColor: 'rgba(0, 212, 255, 0.08)',
+      position: 'relative', overflow: 'hidden',
+    }}>
+      {/* 背景のグロー */}
+      <div style={{
+        position: 'absolute', top: -20, left: -20,
+        width: 80, height: 80, borderRadius: '50%',
+        background: 'radial-gradient(circle, rgba(0, 212, 255, 0.06), transparent)',
+        pointerEvents: 'none',
+      }} />
       <div style={{
         width: 44, height: 44, borderRadius: 10,
-        background: 'var(--accent-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--accent-dim)',
+        border: '1px solid rgba(0, 212, 255, 0.15)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-        <Icon size={20} color="var(--accent)" />
+        <Icon size={20} color="var(--accent)" style={{ filter: 'drop-shadow(0 0 4px rgba(0, 212, 255, 0.3))' }} />
       </div>
-      <div>
-        <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1 }}>{value}</div>
+      <div style={{ position: 'relative' }}>
+        <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1, color: 'var(--text)' }}>{value}</div>
         <div style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 4 }}>{label}</div>
         {sub && <div style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 2 }}>{sub}</div>}
       </div>
@@ -21,6 +35,7 @@ function StatCard({ icon: Icon, label, value, sub }) {
 }
 
 export default function Dashboard() {
+  const isMobile = useIsMobile()
   const { data, loading, error } = useFetch(api.status, [])
   const { data: industries } = useFetch(api.industries, [])
 
@@ -50,7 +65,7 @@ python backend/collector.py               # 全企業（数時間かかる場合
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(${isMobile ? '140px' : '200px'}, 1fr))`, gap: isMobile ? 8 : 16, marginBottom: isMobile ? 12 : 24 }}>
         <StatCard icon={Building2} label="収録企業数" value={data?.companies?.toLocaleString() ?? '–'} />
         <StatCard icon={FileText}  label="財務レコード数" value={data?.financials?.toLocaleString() ?? '–'} />
         <StatCard icon={Database}  label="DB保存先" value="ローカル" sub={data?.db_path} />
@@ -64,7 +79,7 @@ python backend/collector.py               # 全企業（数時間かかる場合
       {industries && industries.length > 0 && (
         <div className="card">
           <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 14 }}>業種別企業数 (上位20)</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? '140px' : '240px'}, 1fr))`, gap: 8 }}>
             {industries.slice(0, 20).map(ind => (
               <div key={ind.industry_code} style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',

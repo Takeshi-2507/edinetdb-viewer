@@ -1,5 +1,20 @@
 const BASE = '/api'
 
+// ---------- Device ID (端末固有識別子) ----------
+function getDeviceId() {
+  const KEY = 'edinet_device_id'
+  let id = localStorage.getItem(KEY)
+  if (!id) {
+    id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    localStorage.setItem(KEY, id)
+  }
+  return id
+}
+
+export const deviceId = getDeviceId()
+
+// ---------- HTTP helpers ----------
+
 async function get(path, params = {}) {
   const url = new URL(BASE + path, location.origin)
   Object.entries(params).forEach(([k, v]) => v != null && url.searchParams.set(k, v))
@@ -64,13 +79,13 @@ export const api = {
   removeTag: (edinetCode, tag) => del(`/tags/${edinetCode}`, { tag }),
   // 検索・アラート
   companySearch: (q) => get('/company-search', { q }),
-  alerts: () => get('/alerts'),
+  alerts: () => get('/alerts', { device_id: deviceId }),
   // 米国株
   usScreener: (p) => get('/us-screener', p),
-  // デモトレード
-  demoTrades: () => get('/demo-trades'),
-  createTrade: (trade) => postJSON('/demo-trades', trade),
-  deleteTrade: (id) => del(`/demo-trades/${id}`),
-  demoPortfolio: () => get('/demo-portfolio'),
+  // デモトレード（端末ごとに分離）
+  demoTrades: () => get('/demo-trades', { device_id: deviceId }),
+  createTrade: (trade) => postJSON('/demo-trades', { ...trade, device_id: deviceId }),
+  deleteTrade: (id) => del(`/demo-trades/${id}`, { device_id: deviceId }),
+  demoPortfolio: () => get('/demo-portfolio', { device_id: deviceId }),
   stockHistory: (code, period) => get(`/stock-history/${code}`, { period }),
 }

@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 function fmtAmt(v) {
   if (v == null) return '–'
@@ -24,6 +25,7 @@ const METRICS = [
 ]
 
 export default function Rankings() {
+  const isMobile = useIsMobile()
   const [metric, setMetric] = useState('roe')
   const [limit, setLimit] = useState(30)
 
@@ -57,13 +59,14 @@ export default function Rankings() {
             <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', fontSize: 12, color: 'var(--text-dim)' }}>
               {metaObj?.label} ランキング{data?.fiscal_year ? `（${data.fiscal_year}年度）` : ''}
             </div>
+            <div style={{ overflowX: 'auto' }}>
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: 50 }}>順位</th>
+                  <th style={{ width: 40 }}>順位</th>
                   <th>企業名</th>
-                  <th>業種</th>
-                  <th>証券コード</th>
+                  {!isMobile && <th>業種</th>}
+                  {!isMobile && <th>証券コード</th>}
                   <th style={{ textAlign: 'right' }}>{metaObj?.label}</th>
                 </tr>
               </thead>
@@ -78,8 +81,8 @@ export default function Rankings() {
                         {row.company_name}
                       </Link>
                     </td>
-                    <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{row.industry || '–'}</td>
-                    <td className="number" style={{ fontSize: 12 }}>{row.securities_code || '–'}</td>
+                    {!isMobile && <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{row.industry || '–'}</td>}
+                    {!isMobile && <td className="number" style={{ fontSize: 12 }}>{row.securities_code || '–'}</td>}
                     <td className="number" style={{ textAlign: 'right', fontWeight: 600, color: 'var(--accent)' }}>
                       {metaObj?.fmt(row.value)}
                     </td>
@@ -87,6 +90,7 @@ export default function Rankings() {
                 ))}
               </tbody>
             </table>
+            </div>
           </>
         )}
       </div>

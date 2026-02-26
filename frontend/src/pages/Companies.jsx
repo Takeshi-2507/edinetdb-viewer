@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
 
 function ScoreBadge({ score }) {
@@ -17,6 +18,7 @@ function ScoreBadge({ score }) {
 }
 
 export default function Companies() {
+  const isMobile = useIsMobile()
   const [q, setQ] = useState('')
   const [inputVal, setInputVal] = useState('')
   const [industry, setIndustry] = useState('')
@@ -53,7 +55,7 @@ export default function Companies() {
             onChange={e => setInputVal(e.target.value)}
           />
         </div>
-        <select value={industry} onChange={e => { setIndustry(e.target.value); setPage(1) }} style={{ flex: '0 0 200px' }}>
+        <select value={industry} onChange={e => { setIndustry(e.target.value); setPage(1) }} style={{ flex: isMobile ? '1 1 100%' : '0 0 200px' }}>
           <option value="">全業種</option>
           {industriesData?.map(i => (
             <option key={i.industry} value={i.industry}>
@@ -61,7 +63,7 @@ export default function Companies() {
             </option>
           ))}
         </select>
-        <select value={sortBy} onChange={e => { setSortBy(e.target.value); setPage(1) }} style={{ flex: '0 0 160px' }}>
+        <select value={sortBy} onChange={e => { setSortBy(e.target.value); setPage(1) }} style={{ flex: isMobile ? '1 1 100%' : '0 0 160px' }}>
           <option value="credit_score">信用スコア順</option>
           <option value="takehara">竹原式スコア順</option>
         </select>

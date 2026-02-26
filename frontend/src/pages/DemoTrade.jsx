@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 function fmtPrice(v) {
   if (v == null) return '-'
@@ -109,6 +110,7 @@ function CompanySearch({ onSelect }) {
 }
 
 export default function DemoTrade() {
+  const isMobile = useIsMobile()
   const [portfolio, setPortfolio] = useState(null)
   const [trades, setTrades] = useState([])
   const [loading, setLoading] = useState(false)
@@ -234,7 +236,7 @@ export default function DemoTrade() {
       {error && <div style={{ color: 'var(--red)', marginBottom: 12, fontSize: 12 }}>エラー: {error}</div>}
 
       {/* メインレイアウト: 左(チャート) + 右(注文) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 340px', gap: 16, marginBottom: 16 }}>
 
         {/* 左パネル: 検索 + チャート */}
         <div>
@@ -297,7 +299,7 @@ export default function DemoTrade() {
                 </div>
 
                 {/* チャート */}
-                <MiniChart history={chartData} width={500} height={140} />
+                <MiniChart history={chartData} width={isMobile ? 320 : 500} height={isMobile ? 100 : 140} />
               </>
             )}
           </div>
@@ -486,7 +488,7 @@ export default function DemoTrade() {
       )}
 
       {/* 保有一覧 + 取引履歴 (下部) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
         {/* 保有一覧 */}
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 600, color: 'var(--text-dim)' }}>

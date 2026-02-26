@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 function fmtAmt(v) {
   if (v == null) return '-'
@@ -126,7 +127,7 @@ const ALL_SORT_LABELS = Object.fromEntries([
 const SORT_BADGES = ['①', '②', '③']
 
 /** ソートダイアログ（Excel風） */
-function SortDialog({ sortKeys, onApply, onClose }) {
+function SortDialog({ sortKeys, onApply, onClose, isMobile }) {
   const [keys, setKeys] = useState(() => {
     const arr = [...sortKeys]
     while (arr.length < 3) arr.push({ key: '', dir: '' })
@@ -173,7 +174,8 @@ function SortDialog({ sortKeys, onApply, onClose }) {
     }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{
         background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 12, padding: 24, minWidth: 420, maxWidth: 500,
+        borderRadius: 12, padding: isMobile ? 16 : 24, minWidth: isMobile ? 'auto' : 420, maxWidth: 500,
+        width: isMobile ? 'calc(100vw - 32px)' : undefined,
         boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
       }}>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16, color: 'var(--text)' }}>
@@ -317,6 +319,7 @@ function buildSortBy(sortKeys) {
 }
 
 export default function Screener() {
+  const isMobile = useIsMobile()
   const [preset, setPreset] = useState('takehara')
   const [filters, setFilters] = useState({ ...DEFAULT_FILTERS, ...PRESETS.takehara.params })
   const [sortKeys, setSortKeys] = useState([{ key: 'score', dir: 'desc' }])
@@ -472,7 +475,7 @@ export default function Screener() {
             </span>
           )}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fill, minmax(180px, 1fr))', gap: isMobile ? 8 : 10 }}>
           <label style={{ fontSize: 12 }}>
             <span style={{ color: 'var(--text-dim)' }}>PER上限</span>
             <input type="number" step="0.1" placeholder="例: 15"
@@ -626,6 +629,7 @@ export default function Screener() {
           sortKeys={sortKeys}
           onApply={handleSortDialogApply}
           onClose={() => setShowSortDialog(false)}
+          isMobile={isMobile}
         />
       )}
 
@@ -710,7 +714,7 @@ export default function Screener() {
             </div>
 
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ minWidth: showPrices ? 1350 : 1000 }}>
+              <table style={{ minWidth: isMobile ? 700 : (showPrices ? 1350 : 1000), fontSize: isMobile ? 11 : undefined }}>
                 <thead>
                   <tr>
                     <th style={{ width: 40 }}>#</th>

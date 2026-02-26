@@ -1,6 +1,7 @@
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { useCallback, useState, useEffect } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -243,6 +244,7 @@ function IrSection({ edinetCode }) {
 }
 
 export default function CompanyDetail() {
+  const isMobile = useIsMobile()
   const { id } = useParams()
   const fetcher = useCallback(() => api.company(id), [id])
   const { data, loading, error } = useFetch(fetcher, [id])
@@ -298,7 +300,7 @@ export default function CompanyDetail() {
 
       {/* 最新年度サマリ */}
       {latest && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? '110px' : '160px'}, 1fr))`, gap: isMobile ? 8 : 12, marginBottom: isMobile ? 12 : 24 }}>
           <MetricCard label="売上高" value={fmt(latest.revenue, '円')} sub={`FY${latest.fiscal_year}`} />
           <MetricCard label="営業利益" value={fmt(latest.operating_income, '円')} />
           <MetricCard label="経常利益" value={fmt(latest.ordinary_income, '円')} />
@@ -356,7 +358,7 @@ export default function CompanyDetail() {
       {anal && (
         <div className="card" style={{ marginBottom: 20 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>AI分析</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? '100px' : '140px'}, 1fr))`, gap: isMobile ? 6 : 10, marginBottom: isMobile ? 10 : 16 }}>
             {anal.credit_score != null && (
               <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
                 <div style={{ fontSize: 24, fontWeight: 700, color: anal.credit_score >= 70 ? 'var(--green)' : anal.credit_score >= 40 ? 'var(--yellow)' : 'var(--red)' }}>

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 function fmtUSD(v) {
   if (v == null) return '-'
@@ -54,6 +55,7 @@ const PRESETS = {
 }
 
 export default function USScreener() {
+  const isMobile = useIsMobile()
   const [preset, setPreset] = useState('all')
   const [filters, setFilters] = useState({})
   const [sortBy, setSortBy] = useState('score')
@@ -135,7 +137,7 @@ export default function USScreener() {
             </span>
           )}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fill, minmax(160px, 1fr))', gap: isMobile ? 8 : 10 }}>
           <label style={{ fontSize: 12 }}>
             <span style={{ color: 'var(--text-dim)' }}>PER上限</span>
             <input type="number" step="1" placeholder="例: 20"
@@ -224,7 +226,7 @@ export default function USScreener() {
             </div>
 
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ minWidth: 1100 }}>
+              <table style={{ minWidth: isMobile ? 600 : 1100, fontSize: isMobile ? 11 : undefined }}>
                 <thead>
                   <tr>
                     <th style={{ width: 40 }}>#</th>
