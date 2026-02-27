@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
-import { Routes, Route, NavLink } from 'react-router-dom'
-import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Bell } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
+import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Bell, Menu, X } from 'lucide-react'
 import { api } from './api'
-import { useIsMobile } from './hooks/useIsMobile'
 import Dashboard from './pages/Dashboard'
 import Companies from './pages/Companies'
 import CompanyDetail from './pages/CompanyDetail'
@@ -12,16 +11,16 @@ import DemoTrade from './pages/DemoTrade'
 import USScreener from './pages/USScreener'
 
 const NAV = [
-  { to: '/',            icon: LayoutDashboard, label: 'ダッシュボード', short: 'ホーム' },
-  { to: '/screener',    icon: Filter,          label: 'スクリーニング', short: 'スクリーン' },
-  { to: '/us-screener', icon: Globe,           label: '米国株',       short: '米国株' },
-  { to: '/demo-trade',  icon: LineChart,       label: 'デモトレード',  short: 'デモ' },
-  { to: '/companies',   icon: Building2,       label: '企業一覧',     short: '企業' },
-  { to: '/rankings',    icon: TrendingUp,      label: 'ランキング',   short: 'ランキング' },
+  { to: '/',            icon: LayoutDashboard, label: 'ダッシュボード' },
+  { to: '/screener',    icon: Filter,          label: 'スクリーニング' },
+  { to: '/us-screener', icon: Globe,           label: '米国株' },
+  { to: '/demo-trade',  icon: LineChart,       label: 'デモトレード' },
+  { to: '/companies',   icon: Building2,       label: '企業一覧' },
+  { to: '/rankings',    icon: TrendingUp,      label: 'ランキング' },
 ]
 
 /** アラートパネル */
-function AlertPanel({ alerts, checkedAt, onClose, onDismiss, isMobile }) {
+function AlertPanel({ alerts, checkedAt, onClose }) {
   if (!alerts) return null
 
   const fmtTime = (iso) => {
@@ -31,14 +30,7 @@ function AlertPanel({ alerts, checkedAt, onClose, onDismiss, isMobile }) {
   }
 
   return (
-    <div style={{
-      position: 'fixed', top: 0, right: 0, bottom: 0,
-      width: isMobile ? '100vw' : 380,
-      background: 'var(--surface)', borderLeft: isMobile ? 'none' : '1px solid var(--border)',
-      boxShadow: '-8px 0 30px rgba(0,0,0,0.4)', zIndex: 1000,
-      display: 'flex', flexDirection: 'column',
-      animation: 'slideIn 0.2s ease-out',
-    }}>
+    <div className="alert-panel">
       {/* Header */}
       <div style={{
         padding: '16px 20px', borderBottom: '1px solid var(--border)',
@@ -55,6 +47,7 @@ function AlertPanel({ alerts, checkedAt, onClose, onDismiss, isMobile }) {
         <button onClick={onClose} style={{
           background: 'none', border: 'none', cursor: 'pointer',
           color: 'var(--text-dim)', fontSize: 20, lineHeight: 1,
+          textShadow: 'none',
         }}>×</button>
       </div>
 
@@ -141,11 +134,17 @@ function AlertPanel({ alerts, checkedAt, onClose, onDismiss, isMobile }) {
 }
 
 export default function App() {
-  const isMobile = useIsMobile()
+  const [menuOpen, setMenuOpen] = useState(false)
   const [alerts, setAlerts] = useState(null)
   const [checkedAt, setCheckedAt] = useState(null)
   const [showAlerts, setShowAlerts] = useState(false)
   const [dismissed, setDismissed] = useState(new Set())
+  const location = useLocation()
+
+  // ページ遷移時にメニューを閉じる
+  useEffect(() => {
+    setMenuOpen(false)
+  }, [location.pathname])
 
   const fetchAlerts = useCallback(() => {
     api.alerts()
@@ -166,112 +165,34 @@ export default function App() {
   const activeAlerts = alerts?.filter(a => !dismissed.has(a.securities_code)) || []
   const alertCount = activeAlerts.length
 
-  /* ===== Mobile: ボトムタブバー ===== */
-  if (isMobile) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-        {/* Main content */}
-        <main style={{ flex: 1, overflow: 'auto', padding: '12px 10px 72px' }}>
-          <Routes>
-            <Route path="/"              element={<Dashboard />} />
-            <Route path="/screener"      element={<Screener />} />
-            <Route path="/us-screener"   element={<USScreener />} />
-            <Route path="/demo-trade"    element={<DemoTrade />} />
-            <Route path="/companies"     element={<Companies />} />
-            <Route path="/companies/:id" element={<CompanyDetail />} />
-            <Route path="/rankings"      element={<Rankings />} />
-          </Routes>
-        </main>
-
-        {/* Bottom Tab Bar */}
-        <nav style={{
-          position: 'fixed', bottom: 0, left: 0, right: 0,
-          height: 56, background: 'rgba(12, 16, 24, 0.92)',
-          backdropFilter: 'blur(16px) saturate(180%)',
-          borderTop: '1px solid rgba(0, 212, 255, 0.1)',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-around',
-          zIndex: 900, paddingBottom: 'env(safe-area-inset-bottom)',
-        }}>
-          {NAV.slice(0, 5).map(({ to, icon: Icon, short }) => (
-            <NavLink
-              key={to} to={to} end={to === '/'}
-              style={({ isActive }) => ({
-                display: 'flex', flexDirection: 'column', alignItems: 'center',
-                gap: 2, padding: '6px 0',
-                color: isActive ? 'var(--accent)' : 'var(--text-dim)',
-                textDecoration: 'none', fontSize: 9, fontWeight: isActive ? 700 : 400,
-                minWidth: 48,
-                filter: isActive ? 'drop-shadow(0 0 6px rgba(0, 212, 255, 0.4))' : 'none',
-                transition: 'color 0.2s, filter 0.2s',
-              })}
-            >
-              <Icon size={20} />
-              {short}
-            </NavLink>
-          ))}
-          {/* アラートベル */}
-          <button
-            onClick={() => { setShowAlerts(v => !v); fetchAlerts() }}
-            style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center',
-              gap: 2, padding: '6px 0', background: 'none', border: 'none',
-              color: alertCount > 0 ? 'var(--red)' : 'var(--text-dim)',
-              fontSize: 9, fontWeight: alertCount > 0 ? 700 : 400,
-              minWidth: 48, cursor: 'pointer', position: 'relative',
-              textShadow: 'none',
-            }}
-          >
-            <div style={{ position: 'relative' }}>
-              <Bell size={20} />
-              {alertCount > 0 && (
-                <span style={{
-                  position: 'absolute', top: -4, right: -6,
-                  width: 14, height: 14, borderRadius: '50%',
-                  background: 'var(--red)', color: '#fff',
-                  fontSize: 8, fontWeight: 800,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  boxShadow: '0 0 8px rgba(255, 77, 106, 0.5)',
-                }}>{alertCount}</span>
-              )}
-            </div>
-            通知
-          </button>
-        </nav>
-
-        {/* アラートパネル */}
-        {showAlerts && (
-          <>
-            <div
-              onClick={() => setShowAlerts(false)}
-              style={{
-                position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                background: 'rgba(0,0,0,0.3)', zIndex: 999,
-              }}
-            />
-            <AlertPanel
-              alerts={activeAlerts}
-              checkedAt={checkedAt}
-              onClose={() => setShowAlerts(false)}
-              onDismiss={(code) => setDismissed(prev => new Set([...prev, code]))}
-              isMobile={true}
-            />
-          </>
-        )}
-      </div>
-    )
-  }
-
-  /* ===== Desktop: サイドバーレイアウト ===== */
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
-      {/* Sidebar */}
-      <nav style={{
-        width: 220,
-        background: 'linear-gradient(180deg, var(--surface) 0%, rgba(12, 16, 24, 0.98) 100%)',
-        borderRight: '1px solid var(--border)',
-        display: 'flex', flexDirection: 'column', flexShrink: 0,
-        position: 'relative',
-      }}>
+    <div className="app-layout">
+      {/* ===== モバイル用トップバー (CSSで表示制御) ===== */}
+      <header className="mobile-topbar">
+        <button
+          className="hamburger-btn"
+          onClick={() => setMenuOpen(v => !v)}
+          aria-label="メニュー"
+        >
+          {menuOpen ? <X size={22} /> : <Menu size={22} />}
+        </button>
+        <div className="topbar-title">EDINET DB</div>
+        <button
+          className="topbar-alert-btn"
+          onClick={() => { setShowAlerts(v => !v); fetchAlerts() }}
+        >
+          <Bell size={18} />
+          {alertCount > 0 && <span className="alert-badge-sm">{alertCount}</span>}
+        </button>
+      </header>
+
+      {/* ===== オーバーレイ (モバイルメニューオープン時) ===== */}
+      {menuOpen && (
+        <div className="drawer-overlay" onClick={() => setMenuOpen(false)} />
+      )}
+
+      {/* ===== サイドバー ===== */}
+      <nav className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
         {/* サイドバーの上部グロー */}
         <div style={{
           position: 'absolute', top: 0, left: 0, right: 0, height: 120,
@@ -292,6 +213,7 @@ export default function App() {
           {NAV.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to} to={to} end={to === '/'}
+              onClick={() => setMenuOpen(false)}
               style={({ isActive }) => ({
                 display: 'flex', alignItems: 'center', gap: 10,
                 padding: '9px 12px', borderRadius: 8, marginBottom: 2,
@@ -313,7 +235,7 @@ export default function App() {
         {/* アラートベル */}
         <div style={{ padding: '8px 8px', borderTop: '1px solid var(--border)' }}>
           <button
-            onClick={() => { setShowAlerts(v => !v); fetchAlerts() }}
+            onClick={() => { setShowAlerts(v => !v); fetchAlerts(); setMenuOpen(false) }}
             style={{
               display: 'flex', alignItems: 'center', gap: 10, width: '100%',
               padding: '9px 12px', borderRadius: 8, cursor: 'pointer',
@@ -353,8 +275,8 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Main */}
-      <main style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+      {/* ===== メインコンテンツ ===== */}
+      <main className="main-content">
         <Routes>
           <Route path="/"              element={<Dashboard />} />
           <Route path="/screener"      element={<Screener />} />
@@ -366,7 +288,7 @@ export default function App() {
         </Routes>
       </main>
 
-      {/* アラートパネル (右スライドイン) */}
+      {/* ===== アラートパネル ===== */}
       {showAlerts && (
         <>
           <div
@@ -380,8 +302,6 @@ export default function App() {
             alerts={activeAlerts}
             checkedAt={checkedAt}
             onClose={() => setShowAlerts(false)}
-            onDismiss={(code) => setDismissed(prev => new Set([...prev, code]))}
-            isMobile={false}
           />
         </>
       )}
