@@ -206,7 +206,7 @@ export default function App() {
             color: 'var(--accent)',
             letterSpacing: '.06em',
           }}>EDINET DB</div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>Viewer</div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>Online</div>
         </div>
         <div style={{ padding: '8px 8px', flex: 1 }}>
           {NAV.map(({ to, icon: Icon, label }) => (
