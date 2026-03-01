@@ -325,13 +325,13 @@ export default function Screener() {
   const [sortKeys, setSortKeys] = useState([{ key: 'score', dir: 'desc' }])
   const [page, setPage] = useState(1)
   const [showScoreHelp, setShowScoreHelp] = useState(false)
-  const [showPrices, setShowPrices] = useState(true)  // デフォルトON
+  const [showPrices, setShowPrices] = useState(false)  // デフォルトOFF（メモリ節約）
   const [showSortDialog, setShowSortDialog] = useState(false)
 
   // appliedFiltersを計算
   const [appliedFilters, setAppliedFilters] = useState(() => ({
     ...DEFAULT_FILTERS, ...PRESETS.takehara.params,
-    sort_by: 'score:desc', page: 1, limit: 100, with_prices: true,
+    sort_by: 'score:desc', page: 1, limit: 100, with_prices: false,
   }))
 
   const fetcher = useCallback(() => {

@@ -850,7 +850,7 @@ def screener(
         batch_size = 50
         for i in range(0, len(items), batch_size):
             batch = items[i:i + batch_size]
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 for code, data in executor.map(_fetch, batch):
                     if data and data.get("price"):
                         price_map[code] = data["price"]
@@ -871,7 +871,7 @@ def screener(
         bs_map = {}  # securities_code -> {total_debt, net_debt, ...}
         for i in range(0, len(items), batch_size):
             batch = items[i:i + batch_size]
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 for code, data in executor.map(_fetch_bs, batch):
                     if data:
                         bs_map[code] = data
@@ -1648,7 +1648,7 @@ def us_screener(
 
     # 並列取得 (最大10スレッド)
     results = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(_fetch_us_stock_info, t): t for t in ticker_list}
         for future in as_completed(futures):
             ticker = futures[future]
