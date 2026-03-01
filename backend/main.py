@@ -337,7 +337,7 @@ def list_companies(
         rows = conn.execute(
             f"""
             SELECT c.*,
-                   (SELECT COUNT(*) FROM financials f2 WHERE f2.edinet_code = c.edinet_code) AS fiscal_years,
+                   COALESCE(fc.fiscal_years, 0) AS fiscal_years,
                    f.per, f.roe, f.eps, f.bps, f.revenue, f.operating_income,
                    f.net_income, f.total_assets, f.cash, f.equity_ratio, f.dividend,
                    f.cf_operating, f.cf_investing,
@@ -345,6 +345,10 @@ def list_companies(
             FROM companies c
             LEFT JOIN financials f ON f.edinet_code = c.edinet_code AND f.fiscal_year = ?
             LEFT JOIN ratios r ON r.edinet_code = c.edinet_code AND r.fiscal_year = ?
+            LEFT JOIN (
+                SELECT edinet_code, COUNT(*) AS fiscal_years
+                FROM financials GROUP BY edinet_code
+            ) fc ON fc.edinet_code = c.edinet_code
             {where}
             ORDER BY c.credit_score DESC, c.company_name
             LIMIT ? OFFSET ?
@@ -797,8 +801,9 @@ def screener(
         else:
             base_query += " ORDER BY f.per ASC NULLS LAST"
 
-        # Python側ソートが必要な場合は全件取得、それ以外はページネーション
+        # Python側ソートが必要な場合は上限付き取得、それ以外はページネーション
         if need_python_sort:
+            base_query += " LIMIT 2000"
             rows = conn.execute(base_query, params).fetchall()
         else:
             offset = (page - 1) * limit
@@ -1109,9 +1114,29 @@ def _ensure_demo_trades_table():
         conn.commit()
 
 
-# サーバー起動時にテーブルを確保
+# サーバー起動時にテーブルとインデックスを確保
+def _ensure_indexes():
+    """パフォーマンス用インデックスを追加"""
+    with get_db(readonly=False) as conn:
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_financials_fiscal_year
+              ON financials(fiscal_year);
+            CREATE INDEX IF NOT EXISTS idx_financials_code_year
+              ON financials(edinet_code, fiscal_year);
+            CREATE INDEX IF NOT EXISTS idx_ratios_code_year
+              ON ratios(edinet_code, fiscal_year);
+            CREATE INDEX IF NOT EXISTS idx_demo_trades_device
+              ON demo_trades(device_id);
+            CREATE INDEX IF NOT EXISTS idx_companies_credit_score
+              ON companies(credit_score DESC, company_name);
+            CREATE INDEX IF NOT EXISTS idx_companies_securities_code
+              ON companies(securities_code);
+        """)
+        conn.commit()
+
 try:
     _ensure_demo_trades_table()
+    _ensure_indexes()
 except Exception:
     pass  # DB未作成の場合はスキップ
 
@@ -1200,7 +1225,21 @@ def demo_portfolio(device_id: str = Query("", description="端末ID")) -> dict:
                 h["total_qty"] -= sell_qty
                 h["total_cost"] -= avg_cost * sell_qty
 
-    # 現在株価を取得して損益計算
+    # 保有中の銘柄だけ株価を一括取得 (並列化)
+    active_codes = {c: h for c, h in holdings.items() if h["total_qty"] > 0}
+    ticker_map = {c: _sec_code_to_ticker(c) for c in active_codes}
+    price_map: dict[str, dict | None] = {}
+    from concurrent.futures import ThreadPoolExecutor
+    valid_tickers = {c: t for c, t in ticker_map.items() if t}
+    if valid_tickers:
+        def _fetch_price(item):
+            code, ticker = item
+            return code, fetch_stock_price(ticker)
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for code, pdata in ex.map(_fetch_price, valid_tickers.items()):
+                price_map[code] = pdata
+
+    # 損益計算
     result = []
     for code, h in holdings.items():
         if h["total_qty"] <= 0:
@@ -1210,9 +1249,8 @@ def demo_portfolio(device_id: str = Query("", description="端末ID")) -> dict:
             h["pnl_pct"] = 0
         else:
             h["avg_cost"] = round(h["total_cost"] / h["total_qty"], 1)
-            ticker = _sec_code_to_ticker(code)
-            price_data = fetch_stock_price(ticker) if ticker else None
-            h["current_price"] = price_data["price"] if price_data else None
+            pdata = price_map.get(code)
+            h["current_price"] = pdata["price"] if pdata else None
             if h["current_price"]:
                 h["unrealized_pnl"] = round(
                     (h["current_price"] - h["avg_cost"]) * h["total_qty"], 0
@@ -1340,55 +1378,64 @@ def get_alerts(device_id: str = Query("", description="端末ID")) -> dict:
     if not active:
         return {"alerts": [], "checked_at": datetime.now(timezone.utc).isoformat()}
 
-    # 財務データと株価を取得してアラート判定
-    alerts = []
-    with get_db() as conn:
-        for code, h in active.items():
-            avg_cost = round(h["total_cost"] / h["total_qty"], 1) if h["total_qty"] > 0 else 0
+    # 財務データを一括取得 + 株価を並列取得してアラート判定
+    from concurrent.futures import ThreadPoolExecutor
 
-            # EPS取得（最新年度）
+    # EPS を一括で取得
+    eps_map: dict[str, float] = {}
+    with get_db() as conn:
+        for code in active:
             fin_row = conn.execute(
-                """SELECT eps, bps FROM financials
-                   WHERE edinet_code = (SELECT edinet_code FROM companies WHERE securities_code = ? LIMIT 1)
-                   AND eps IS NOT NULL
-                   ORDER BY fiscal_year DESC LIMIT 1""",
+                """SELECT f.eps FROM financials f
+                   JOIN companies c ON c.edinet_code = f.edinet_code
+                   WHERE c.securities_code = ? AND f.eps IS NOT NULL AND f.eps > 0
+                   ORDER BY f.fiscal_year DESC LIMIT 1""",
                 (code,),
             ).fetchone()
+            if fin_row:
+                eps_map[code] = fin_row[0]
 
-            if not fin_row or not fin_row[0] or fin_row[0] <= 0:
-                continue
+    # 株価を並列取得
+    codes_need_price = [c for c in eps_map if _sec_code_to_ticker(c)]
+    price_map: dict[str, dict | None] = {}
+    if codes_need_price:
+        def _fetch(code):
+            return code, fetch_stock_price(_sec_code_to_ticker(code))
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for code, pdata in ex.map(_fetch, codes_need_price):
+                price_map[code] = pdata
 
-            eps = fin_row[0]
-            target = round(eps * 15, 1)  # PER15倍ライン
+    # アラート生成
+    alerts = []
+    for code in eps_map:
+        h = active[code]
+        avg_cost = round(h["total_cost"] / h["total_qty"], 1) if h["total_qty"] > 0 else 0
+        eps = eps_map[code]
+        target = round(eps * 15, 1)
 
-            # 現在株価
-            ticker = _sec_code_to_ticker(code)
-            if not ticker:
-                continue
-            price_data = fetch_stock_price(ticker)
-            if not price_data or not price_data.get("price"):
-                continue
+        pdata = price_map.get(code)
+        if not pdata or not pdata.get("price"):
+            continue
+        current_price = pdata["price"]
+        gap_pct = round(((current_price - target) / target) * 100, 1)
 
-            current_price = price_data["price"]
-            gap_pct = round(((current_price - target) / target) * 100, 1)
-
-            if gap_pct > 0:
-                severity = "danger" if gap_pct > 20 else "warning"
-                unrealized_pnl = round((current_price - avg_cost) * h["total_qty"], 0)
-                alerts.append({
-                    "securities_code": code,
-                    "company_name": h["company_name"],
-                    "current_price": current_price,
-                    "target_price": target,
-                    "gap_pct": gap_pct,
-                    "avg_cost": avg_cost,
-                    "total_qty": h["total_qty"],
-                    "unrealized_pnl": unrealized_pnl,
-                    "severity": severity,
-                    "message": f"PER15倍ライン(¥{target:,.0f})を{gap_pct:.1f}%上回っています。" + (
-                        "売り検討のタイミングです。" if gap_pct > 20 else "注意して推移を確認してください。"
-                    ),
-                })
+        if gap_pct > 0:
+            severity = "danger" if gap_pct > 20 else "warning"
+            unrealized_pnl = round((current_price - avg_cost) * h["total_qty"], 0)
+            alerts.append({
+                "securities_code": code,
+                "company_name": h["company_name"],
+                "current_price": current_price,
+                "target_price": target,
+                "gap_pct": gap_pct,
+                "avg_cost": avg_cost,
+                "total_qty": h["total_qty"],
+                "unrealized_pnl": unrealized_pnl,
+                "severity": severity,
+                "message": f"PER15倍ライン(¥{target:,.0f})を{gap_pct:.1f}%上回っています。" + (
+                    "売り検討のタイミングです。" if gap_pct > 20 else "注意して推移を確認してください。"
+                ),
+            })
 
     alerts.sort(key=lambda x: x["gap_pct"], reverse=True)
     return {
