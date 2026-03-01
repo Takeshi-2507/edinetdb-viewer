@@ -98,7 +98,7 @@ function AnalysisHistory({ history }) {
 
   const ratingColor = (r) => {
     if (r === 'S') return 'var(--green)'
-    if (r === 'A') return '#22d3ee'
+    if (r === 'A') return 'var(--accent2)'
     if (r === 'B') return 'var(--accent)'
     if (r === 'C') return 'var(--yellow)'
     return 'var(--red)'

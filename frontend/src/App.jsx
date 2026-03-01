@@ -193,21 +193,20 @@ export default function App() {
 
       {/* ===== サイドバー ===== */}
       <nav className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
-        {/* サイドバーの上部グロー */}
+        {/* サイドバーの上部アクセント */}
         <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, height: 120,
-          background: 'radial-gradient(ellipse at 50% 0%, rgba(0, 212, 255, 0.06), transparent)',
+          position: 'absolute', top: 0, left: 0, right: 0, height: 2,
+          background: 'linear-gradient(90deg, var(--accent), transparent)',
           pointerEvents: 'none',
         }} />
 
         <div style={{ padding: '20px 16px 12px', borderBottom: '1px solid var(--border)', position: 'relative' }}>
           <div style={{
             fontWeight: 800, fontSize: 16,
-            background: 'linear-gradient(135deg, var(--accent), #7c3aed)',
-            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-            letterSpacing: '.04em',
+            color: 'var(--accent)',
+            letterSpacing: '.06em',
           }}>EDINET DB</div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>Local Viewer</div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>Viewer</div>
         </div>
         <div style={{ padding: '8px 8px', flex: 1 }}>
           {NAV.map(({ to, icon: Icon, label }) => (

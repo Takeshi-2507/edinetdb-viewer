@@ -9,7 +9,7 @@ function ScoreBadge({ score }) {
   if (score == null) return <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>-</span>
   let color = 'var(--text-dim)'
   if (score >= 70) color = 'var(--green)'
-  else if (score >= 50) color = '#22d3ee'
+  else if (score >= 50) color = 'var(--accent2)'
   else if (score >= 30) color = 'var(--yellow)'
   else color = 'var(--red)'
   return (

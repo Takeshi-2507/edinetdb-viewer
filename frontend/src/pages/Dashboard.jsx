@@ -7,23 +7,16 @@ function StatCard({ icon: Icon, label, value, sub }) {
   return (
     <div className="card" style={{
       display: 'flex', alignItems: 'center', gap: 16,
-      borderColor: 'rgba(0, 212, 255, 0.08)',
       position: 'relative', overflow: 'hidden',
+      borderLeft: '3px solid var(--accent)',
     }}>
-      {/* 背景のグロー */}
       <div style={{
-        position: 'absolute', top: -20, left: -20,
-        width: 80, height: 80, borderRadius: '50%',
-        background: 'radial-gradient(circle, rgba(0, 212, 255, 0.06), transparent)',
-        pointerEvents: 'none',
-      }} />
-      <div style={{
-        width: 44, height: 44, borderRadius: 10,
+        width: 44, height: 44, borderRadius: 8,
         background: 'var(--accent-dim)',
-        border: '1px solid rgba(0, 212, 255, 0.15)',
+        border: '1px solid rgba(255, 106, 0, 0.15)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-        <Icon size={20} color="var(--accent)" style={{ filter: 'drop-shadow(0 0 4px rgba(0, 212, 255, 0.3))' }} />
+        <Icon size={20} color="var(--accent)" />
       </div>
       <div style={{ position: 'relative' }}>
         <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1, color: 'var(--text)' }}>{value}</div>

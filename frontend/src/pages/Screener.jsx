@@ -77,7 +77,7 @@ function CnPerBadge({ cnPer, ncr }) {
   let color = 'var(--text-dim)'
   let label = ''
   if (cnPer < 8) { color = 'var(--green)'; label = '強い買い' }
-  else if (cnPer < 12) { color = '#22d3ee'; label = '買い候補' }
+  else if (cnPer < 12) { color = 'var(--accent2)'; label = '買い候補' }
   else if (cnPer < 15) { color = 'var(--yellow)'; label = '適正' }
   else { color = 'var(--red)'; label = '割高' }
 
