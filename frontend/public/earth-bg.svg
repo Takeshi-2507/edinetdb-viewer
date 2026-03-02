@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" fill="none">
+  <defs>
+    <radialGradient id="g" cx="35%" cy="35%">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.15"/>
+      <stop offset="60%" stop-color="#00d4ff" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="c">
+      <circle cx="250" cy="250" r="240"/>
+    </clipPath>
+  </defs>
+
+  <!-- Globe body glow -->
+  <circle cx="250" cy="250" r="240" fill="url(#g)"/>
+  <!-- Globe outline -->
+  <circle cx="250" cy="250" r="240" stroke="#00d4ff" stroke-opacity="0.2" stroke-width="1.5"/>
+
+  <g clip-path="url(#c)" stroke="#00d4ff" fill="none">
+    <!-- ===== Grid lines (latitude) ===== -->
+    <line x1="10" y1="250" x2="490" y2="250" stroke-opacity="0.1" stroke-width="0.5"/>
+    <line x1="30" y1="170" x2="470" y2="170" stroke-opacity="0.07" stroke-width="0.5"/>
+    <line x1="30" y1="330" x2="470" y2="330" stroke-opacity="0.07" stroke-width="0.5"/>
+    <line x1="80" y1="100" x2="420" y2="100" stroke-opacity="0.05" stroke-width="0.5"/>
+    <line x1="80" y1="400" x2="420" y2="400" stroke-opacity="0.05" stroke-width="0.5"/>
+
+    <!-- ===== Grid lines (longitude arcs) ===== -->
+    <ellipse cx="250" cy="250" rx="80" ry="240" stroke-opacity="0.08" stroke-width="0.5"/>
+    <ellipse cx="250" cy="250" rx="160" ry="240" stroke-opacity="0.08" stroke-width="0.5"/>
+    <ellipse cx="250" cy="250" rx="210" ry="240" stroke-opacity="0.05" stroke-width="0.5"/>
+
+    <!-- ===== Continents (Asia-Pacific view) ===== -->
+    <!-- Asia mainland (China / Siberia) -->
+    <path d="M100,80 Q140,65 190,95 Q220,80 250,110 L260,155 Q240,185 210,210 Q180,225 160,205 L140,180 Q110,145 100,110Z"
+      stroke-opacity="0.15" stroke-width="0.8" fill="#00d4ff" fill-opacity="0.04"/>
+
+    <!-- Korean Peninsula -->
+    <path d="M290,130 Q298,120 302,140 L297,162 Q290,168 286,152Z"
+      stroke-opacity="0.15" stroke-width="0.7" fill="#00d4ff" fill-opacity="0.05"/>
+
+    <!-- Japan (Honshu) -->
+    <path d="M318,105 Q330,95 336,118 L333,158 Q326,175 318,167 L314,138Z"
+      stroke-opacity="0.22" stroke-width="0.9" fill="#00d4ff" fill-opacity="0.06"/>
+    <!-- Japan (Kyushu / Shikoku) -->
+    <path d="M304,150 Q312,142 316,160 L311,180 Q304,184 300,172Z"
+      stroke-opacity="0.2" stroke-width="0.7" fill="#00d4ff" fill-opacity="0.06"/>
+    <!-- Japan (Hokkaido) -->
+    <path d="M330,85 Q340,80 342,95 L336,108 Q328,110 326,100Z"
+      stroke-opacity="0.18" stroke-width="0.7" fill="#00d4ff" fill-opacity="0.05"/>
+
+    <!-- India -->
+    <path d="M155,215 Q175,205 188,232 L178,278 Q162,295 150,268 L148,242Z"
+      stroke-opacity="0.1" stroke-width="0.6" fill="#00d4ff" fill-opacity="0.03"/>
+
+    <!-- Southeast Asia -->
+    <path d="M212,230 Q242,215 262,242 L252,282 Q232,298 212,272Z"
+      stroke-opacity="0.1" stroke-width="0.6" fill="#00d4ff" fill-opacity="0.03"/>
+    <!-- Indonesia archipelago -->
+    <path d="M265,268 Q292,258 314,272 L308,288 Q286,296 268,282Z"
+      stroke-opacity="0.08" stroke-width="0.5" fill="#00d4ff" fill-opacity="0.02"/>
+
+    <!-- Australia -->
+    <path d="M292,338 Q342,315 388,335 L398,378 Q382,408 342,418 L308,402 Q280,382 292,338Z"
+      stroke-opacity="0.12" stroke-width="0.7" fill="#00d4ff" fill-opacity="0.04"/>
+
+    <!-- Americas (partial, right edge of globe) -->
+    <path d="M402,78 Q432,62 452,98 L468,162 Q474,212 458,262 L448,292 Q432,312 422,282 L416,232 Q412,178 416,128Z"
+      stroke-opacity="0.07" stroke-width="0.6" fill="#00d4ff" fill-opacity="0.02"/>
+
+    <!-- Africa (partial, left edge) -->
+    <path d="M55,180 Q75,160 90,195 L85,270 Q70,300 55,280 L48,230Z"
+      stroke-opacity="0.06" stroke-width="0.5" fill="#00d4ff" fill-opacity="0.015"/>
+  </g>
+
+  <!-- Outer atmospheric glow ring -->
+  <circle cx="250" cy="250" r="248" stroke="#00d4ff" stroke-opacity="0.06" stroke-width="8"/>
+</svg>

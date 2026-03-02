@@ -13,7 +13,7 @@ function StatCard({ icon: Icon, label, value, sub }) {
       <div style={{
         width: 44, height: 44, borderRadius: 8,
         background: 'var(--accent-dim)',
-        border: '1px solid rgba(255, 106, 0, 0.15)',
+        border: '1px solid var(--accent-dim)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         <Icon size={20} color="var(--accent)" />

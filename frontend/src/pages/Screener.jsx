@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { IS_LOCAL } from '../hooks/useIsLocal'
 
 function fmtAmt(v) {
   if (v == null) return '-'
@@ -325,13 +326,13 @@ export default function Screener() {
   const [sortKeys, setSortKeys] = useState([{ key: 'score', dir: 'desc' }])
   const [page, setPage] = useState(1)
   const [showScoreHelp, setShowScoreHelp] = useState(false)
-  const [showPrices, setShowPrices] = useState(false)  // デフォルトOFF（メモリ節約）
+  const [showPrices, setShowPrices] = useState(IS_LOCAL)  // ローカル=ON、オンライン=OFF（メモリ節約）
   const [showSortDialog, setShowSortDialog] = useState(false)
 
   // appliedFiltersを計算
   const [appliedFilters, setAppliedFilters] = useState(() => ({
     ...DEFAULT_FILTERS, ...PRESETS.takehara.params,
-    sort_by: 'score:desc', page: 1, limit: 100, with_prices: false,
+    sort_by: 'score:desc', page: 1, limit: 100, with_prices: IS_LOCAL,
   }))
 
   const fetcher = useCallback(() => {
@@ -816,7 +817,7 @@ export default function Screener() {
                       <tr key={row.edinet_code}>
                         <td style={{ color: 'var(--text-dim)', fontSize: 11 }}>{(page - 1) * 100 + i + 1}</td>
                         <td>
-                          <Link to={`/companies/${row.edinet_code}`} style={{ fontWeight: 500 }}>
+                          <Link to={`/companies/${row.edinet_code}`} state={{ from: 'screener' }} style={{ fontWeight: 500 }}>
                             {row.company_name}
                           </Link>
                           <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{row.securities_code ? row.securities_code.slice(0, 4) : ''}</div>

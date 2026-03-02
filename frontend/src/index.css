@@ -186,6 +186,8 @@ tr:hover td { background: rgba(255, 106, 0, 0.03); }
   flex: 1;
   overflow: auto;
   padding: 24px;
+  position: relative;
+  z-index: 1;
 }
 
 .alert-panel {
@@ -339,4 +341,60 @@ tr:hover td { background: rgba(255, 106, 0, 0.03); }
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 4px rgba(255, 106, 0, 0.2); }
   50% { box-shadow: 0 0 16px rgba(255, 106, 0, 0.4); }
+}
+
+
+/* ==========================================================
+   Local Theme — Cyber/Earth (cyan + purple)
+   Applied via html.theme-local class
+   ========================================================== */
+html.theme-local {
+  --accent: #00d4ff;
+  --accent-dim: rgba(0, 212, 255, 0.1);
+  --accent2: #a78bfa;
+  --accent2-dim: rgba(167, 139, 250, 0.08);
+  --border-glow: rgba(0, 212, 255, 0.35);
+  --glow-sm: 0 0 8px rgba(0, 212, 255, 0.15);
+  --glow-md: 0 0 20px rgba(0, 212, 255, 0.1);
+  --glow-accent: 0 0 12px rgba(0, 212, 255, 0.3);
+}
+
+html.theme-local body {
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 212, 255, 0.03), transparent),
+    radial-gradient(ellipse 50% 40% at 80% 100%, rgba(124, 58, 237, 0.02), transparent);
+}
+
+html.theme-local a:hover {
+  color: #38bdf8;
+  text-shadow: 0 0 8px rgba(0, 212, 255, 0.3);
+}
+
+html.theme-local tr:hover td {
+  background: rgba(0, 212, 255, 0.03);
+}
+
+html.theme-local .spinner {
+  filter: drop-shadow(0 0 4px rgba(0, 212, 255, 0.3));
+}
+
+html.theme-local ::selection {
+  background: rgba(0, 212, 255, 0.25);
+  color: #fff;
+}
+
+@media (max-width: 768px) {
+  html.theme-local .mobile-topbar {
+    border-bottom: 1px solid rgba(0, 212, 255, 0.15);
+  }
+}
+
+@keyframes pulse-glow-local {
+  0%, 100% { box-shadow: 0 0 4px rgba(0, 212, 255, 0.2); }
+  50% { box-shadow: 0 0 16px rgba(0, 212, 255, 0.4); }
+}
+
+@keyframes earth-rotate {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }

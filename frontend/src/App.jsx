@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Bell, Menu, X } from 'lucide-react'
 import { api } from './api'
+import { useIsLocal } from './hooks/useIsLocal'
 import Dashboard from './pages/Dashboard'
 import Companies from './pages/Companies'
 import CompanyDetail from './pages/CompanyDetail'
@@ -134,12 +135,22 @@ function AlertPanel({ alerts, checkedAt, onClose }) {
 }
 
 export default function App() {
+  const isLocal = useIsLocal()
   const [menuOpen, setMenuOpen] = useState(false)
   const [alerts, setAlerts] = useState(null)
   const [checkedAt, setCheckedAt] = useState(null)
   const [showAlerts, setShowAlerts] = useState(false)
   const [dismissed, setDismissed] = useState(new Set())
   const location = useLocation()
+
+  // ローカル版テーマクラスを <html> に適用
+  useEffect(() => {
+    if (isLocal) {
+      document.documentElement.classList.add('theme-local')
+    } else {
+      document.documentElement.classList.remove('theme-local')
+    }
+  }, [isLocal])
 
   // ページ遷移時にメニューを閉じる
   useEffect(() => {
@@ -167,6 +178,28 @@ export default function App() {
 
   return (
     <div className="app-layout">
+      {/* ===== ローカル版: 地球の背景 ===== */}
+      {isLocal && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            bottom: '-8%',
+            right: '-5%',
+            width: '55vh',
+            height: '55vh',
+            backgroundImage: 'url(/earth-bg.svg)',
+            backgroundSize: 'contain',
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'center',
+            opacity: 0.6,
+            pointerEvents: 'none',
+            zIndex: 0,
+            animation: 'earth-rotate 120s linear infinite',
+          }}
+        />
+      )}
+
       {/* ===== モバイル用トップバー (CSSで表示制御) ===== */}
       <header className="mobile-topbar">
         <button
@@ -206,7 +239,9 @@ export default function App() {
             color: 'var(--accent)',
             letterSpacing: '.06em',
           }}>EDINET DB</div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>Online</div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+            {isLocal ? 'Local' : 'Online'}
+          </div>
         </div>
         <div style={{ padding: '8px 8px', flex: 1 }}>
           {NAV.map(({ to, icon: Icon, label }) => (

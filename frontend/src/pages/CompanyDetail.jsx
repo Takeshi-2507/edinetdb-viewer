@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useFetch } from '../hooks/useFetch'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -246,6 +246,9 @@ function IrSection({ edinetCode }) {
 export default function CompanyDetail() {
   const isMobile = useIsMobile()
   const { id } = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const fromScreener = location.state?.from === 'screener'
   const fetcher = useCallback(() => api.company(id), [id])
   const { data, loading, error } = useFetch(fetcher, [id])
 
@@ -268,9 +271,23 @@ export default function CompanyDetail() {
 
   return (
     <div>
-      <Link to="/companies" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 13, marginBottom: 16 }}>
-        <ArrowLeft size={14} /> 企業一覧に戻る
-      </Link>
+      {fromScreener ? (
+        <button
+          onClick={() => navigate(-1)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            color: 'var(--text-dim)', fontSize: 13, marginBottom: 16,
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: 0, fontFamily: 'inherit', textShadow: 'none',
+          }}
+        >
+          <ArrowLeft size={14} /> スクリーニングに戻る
+        </button>
+      ) : (
+        <Link to="/companies" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 13, marginBottom: 16 }}>
+          <ArrowLeft size={14} /> 企業一覧に戻る
+        </Link>
+      )}
 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
