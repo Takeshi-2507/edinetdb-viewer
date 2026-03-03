@@ -302,7 +302,7 @@ const DEFAULT_FILTERS = {
   per_max: '', pbr_max: '', roe_min: '', equity_ratio_min: '',
   operating_margin_min: '', cash_ratio_min: '', fcf_positive: false,
   revenue_growth_min: '', ni_growth_min: '', dividend_min: '',
-  industry: '', tag: '', exclude_fake_growth: false,
+  industry: '', tag: '', exclude_fake_growth: false, exclude_pachinko: true,
 }
 
 // sort_byのカンマ区切り文字列をパース
@@ -342,6 +342,7 @@ export default function Screener() {
     }
     if (appliedFilters.fcf_positive) p.fcf_positive = true
     if (appliedFilters.exclude_fake_growth) p.exclude_fake_growth = true
+    if (appliedFilters.exclude_pachinko) p.exclude_pachinko = true
     if (appliedFilters.with_prices) p.with_prices = true
     return api.screener(p)
   }, [appliedFilters])
@@ -531,6 +532,11 @@ export default function Screener() {
             <input type="checkbox" checked={filters.exclude_fake_growth}
               onChange={e => setFilter('exclude_fake_growth', e.target.checked)} />
             <span style={{ color: 'var(--yellow)' }}>見せかけ成長株を除外</span>
+          </label>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, paddingTop: 16 }}>
+            <input type="checkbox" checked={filters.exclude_pachinko}
+              onChange={e => setFilter('exclude_pachinko', e.target.checked)} />
+            <span style={{ fontWeight: 500 }}>パチンコ筐体メーカーを除外</span>
           </label>
           <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, paddingTop: 16 }}>
             <input type="checkbox" checked={filters.tag === 'SBI取扱'}

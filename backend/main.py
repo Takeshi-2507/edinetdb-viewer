@@ -642,6 +642,7 @@ def screener(
     tag: str | None = Query(None, description="タグでフィルタ (例: SBI取扱)"),
     with_prices: bool = Query(False, description="株価・売り時目安を結果に含める"),
     exclude_fake_growth: bool = Query(False, description="見せかけ成長株を除外"),
+    exclude_pachinko: bool = Query(False, description="パチンコ筐体メーカーを除外"),
 ) -> dict:
     """竹原式スクリーニング: 複数の財務指標で銘柄をフィルタリング・スコアリング"""
     with get_db() as conn:
@@ -738,6 +739,12 @@ def screener(
         if tag:
             base_query += " AND EXISTS (SELECT 1 FROM company_tags ct WHERE ct.edinet_code = f.edinet_code AND ct.tag = ?)"
             params.append(tag)
+        if exclude_pachinko:
+            # パチンコ筐体メーカー (三共, 平和, 藤商事, ユニバーサル, セガサミー, オーイズミ, ダイコク電機, マースGHD)
+            pachinko_codes = ('E02419', 'E02403', 'E02488', 'E02452', 'E02475', 'E01718', 'E02073', 'E02424')
+            placeholders = ','.join('?' * len(pachinko_codes))
+            base_query += f" AND c.edinet_code NOT IN ({placeholders})"
+            params.extend(pachinko_codes)
 
         # 全件カウント
         count_q = f"SELECT COUNT(*) FROM ({base_query})"
