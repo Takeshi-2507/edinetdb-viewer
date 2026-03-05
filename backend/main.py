@@ -233,6 +233,50 @@ def calc_takehara_score(d: dict) -> tuple[float, dict]:
     return round(score, 1), parts
 
 
+def calc_quality_score(d: dict) -> tuple[float, dict]:
+    """Quality スコアを計算 (0-100点)。ビジネスの質を評価。
+    現在3指標。gross_margin が取得できたら4指標に拡張予定。
+    Returns: (score, parts_dict)
+    """
+    score = 0.0
+    parts: dict[str, float] = {}
+
+    # 営業利益率 (35点): 20%以上で満点
+    om = d.get("operating_margin")
+    if om is None:
+        rev = d.get("revenue")
+        oi = d.get("operating_income")
+        if rev and rev > 0 and oi is not None:
+            om = oi / rev
+    if om is not None and om > 0:
+        s = max(0, min(35, 35 * min(1, om / 0.20)))
+        score += s
+        parts["operating_margin"] = round(s, 1)
+
+    # ROE (35点): 15%以上で満点
+    roe = d.get("roe")
+    if roe is not None and roe > 0:
+        s = max(0, min(35, 35 * min(1, roe / 0.15)))
+        score += s
+        parts["roe"] = round(s, 1)
+
+    # CF Quality (30点): 営業CF/営業利益 >= 1.0 で満点
+    # 利益が現金として回収できているかの指標 (accrual quality)
+    cf_op = d.get("cf_operating")
+    oi = d.get("operating_income")
+    if cf_op is not None and oi is not None and oi > 0:
+        cf_quality = cf_op / oi
+        s = max(0, min(30, 30 * min(1, cf_quality / 1.0)))
+        score += s
+        parts["cf_quality"] = round(s, 1)
+
+    # 将来拡張: gross_margin が取得できたら配点を再調整
+    # gross_margin (25点): 40%以上で満点
+    # → その場合: op_margin 30, roe 25, cf_quality 20, gross_margin 25
+
+    return round(score, 1), parts
+
+
 def calc_target_prices(eps: float | None, bps: float | None) -> dict:
     """竹原式の割安基準から目安株価を算出"""
     targets = {}
@@ -364,9 +408,16 @@ def list_companies(
             score, parts = calc_takehara_score(d)
             d["takehara_score"] = score
             d["score_parts"] = parts
+            q_score, q_parts = calc_quality_score(d)
+            d["quality_score"] = q_score
+            d["quality_parts"] = q_parts
+            d["total_score"] = round(score * 0.6 + q_score * 0.4, 1)
         else:
             d["takehara_score"] = None
             d["score_parts"] = None
+            d["quality_score"] = None
+            d["quality_parts"] = None
+            d["total_score"] = None
         companies.append(d)
 
     # 竹原スコアでソートが指定された場合
@@ -419,18 +470,25 @@ def get_company(edinet_code: str) -> dict:
 
     # 竹原式スコアを最新年度データから計算
     takehara = None
+    quality = None
+    total_score = None
     if fins_list:
         latest = fins_list[0]
         score_input = {**latest, "fcf": latest_fcf}
         if latest.get("per") and latest.get("net_income") and latest["net_income"] > 0:
             score, parts = calc_takehara_score(score_input)
             takehara = {"score": score, "parts": parts}
+            q_score, q_parts = calc_quality_score(score_input)
+            quality = {"score": q_score, "parts": q_parts}
+            total_score = round(score * 0.6 + q_score * 0.4, 1)
 
     return {
         "company": company_dict,
         "financials": fins_list,
         "analysis": row_to_dict(analysis) if analysis else None,
         "takehara": takehara,
+        "quality": quality,
+        "total_score": total_score,
     }
 
 
@@ -821,10 +879,16 @@ def screener(
     results = []
     for row in rows:
         d = row_to_dict(row)
-        # 竹原式スコア計算 (共通関数)
-        score, parts = calc_takehara_score(d)
-        d["takehara_score"] = score
-        d["score_parts"] = parts
+        # Value スコア (竹原式)
+        value_score, value_parts = calc_takehara_score(d)
+        d["takehara_score"] = value_score
+        d["score_parts"] = value_parts
+        # Quality スコア
+        quality_score, quality_parts = calc_quality_score(d)
+        d["quality_score"] = quality_score
+        d["quality_parts"] = quality_parts
+        # 統合スコア (Value 60% + Quality 40%)
+        d["total_score"] = round(value_score * 0.6 + quality_score * 0.4, 1)
         d.update(calc_target_prices(d.get("eps"), d.get("bps")))
 
         results.append(d)
@@ -947,6 +1011,10 @@ def screener(
                 d["takehara_score"] = round(
                     d["takehara_score"] - old_per_score + cn_per_score, 1
                 )
+                # total_score も再計算
+                d["total_score"] = round(
+                    d["takehara_score"] * 0.6 + d.get("quality_score", 0) * 0.4, 1
+                )
 
     # ── 見せかけ成長株検出 ──
     for d in results:
@@ -979,6 +1047,17 @@ def screener(
 
         d["fake_growth_flags"] = flags
         d["is_fake_growth"] = len(flags) > 0
+        d["fake_growth_severity"] = len(flags)
+
+        # 偽成長フラグでQualityScoreを減点 (1フラグ=-15点, 2以上=-30点)
+        if flags:
+            penalty = min(30, len(flags) * 15)
+            d["quality_score"] = max(0, round(d.get("quality_score", 0) - penalty, 1))
+            d["quality_parts"]["fake_growth_penalty"] = -penalty
+            # total_score再計算
+            d["total_score"] = round(
+                d["takehara_score"] * 0.6 + d["quality_score"] * 0.4, 1
+            )
 
     # 見せかけ成長株除外フィルタ
     if exclude_fake_growth:
@@ -987,7 +1066,10 @@ def screener(
     # Python側ソート (Noneは常に末尾)
     if need_python_sort:
         SORT_FIELD_MAP = {
-            "score": "takehara_score",
+            "score": "total_score",
+            "total_score": "total_score",
+            "value_score": "takehara_score",
+            "quality_score": "quality_score",
             "price": "current_price",
             "target": "target_per15",
             "gap": "gap_pct",

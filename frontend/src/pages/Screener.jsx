@@ -37,6 +37,31 @@ function ScoreBar({ score, max = 100 }) {
   )
 }
 
+function TotalScoreCell({ row }) {
+  const total = row.total_score
+  const value = row.takehara_score
+  const quality = row.quality_score
+  if (total == null) return <span style={{ color: 'var(--text-dim)' }}>-</span>
+  const color = total >= 70 ? 'var(--green)' : total >= 50 ? 'var(--yellow)' : total >= 30 ? 'var(--accent)' : 'var(--red)'
+  const vColor = value >= 70 ? 'var(--green)' : value >= 50 ? 'var(--yellow)' : 'var(--text-dim)'
+  const qColor = quality >= 70 ? 'var(--green)' : quality >= 50 ? 'var(--yellow)' : 'var(--text-dim)'
+  const ratio = Math.min(100, (total / 100) * 100)
+  return (
+    <div style={{ minWidth: 90 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ width: 50, height: 6, background: 'var(--surface2)', borderRadius: 3, overflow: 'hidden' }}>
+          <div style={{ width: `${ratio}%`, height: '100%', background: color, borderRadius: 3 }} />
+        </div>
+        <span style={{ fontWeight: 700, fontSize: 13, color, minWidth: 28 }}>{total}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 2, fontSize: 10, lineHeight: 1.2 }}>
+        <span style={{ color: vColor }}>V:{value ?? '-'}</span>
+        <span style={{ color: qColor }}>Q:{quality ?? '-'}</span>
+      </div>
+    </div>
+  )
+}
+
 /** 目安株価と現在株価の比較表示 */
 function PriceTarget({ row, currentPrice }) {
   const target = row.target_per15
@@ -99,8 +124,8 @@ function CnPerBadge({ cnPer, ncr }) {
 const SORTABLE_COLUMNS = [
   { key: 'company_name', label: '銘柄', align: 'left', defaultDir: 'asc' },
   { key: 'industry',     label: '業種', align: 'left', defaultDir: 'asc' },
-  { key: 'score',        label: 'スコア', align: 'right', defaultDir: 'desc',
-    tooltip: 'CN-PER(25点) + PBR(20点) + ROE(20点) + 営業利益率(15点) + 現金比率(10点) + FCF(10点) = 100点満点' },
+  { key: 'score',        label: '総合', align: 'right', defaultDir: 'desc',
+    tooltip: '総合 = Value×60% + Quality×40%\nValue(竹原式): PER+PBR+ROE+営業利益率+現金+FCF\nQuality: 営業利益率+ROE+CF質' },
   { key: 'per',              label: 'PER',      align: 'right', defaultDir: 'asc' },
   { key: 'pbr',              label: 'PBR',      align: 'right', defaultDir: 'asc' },
   { key: 'roe',              label: 'ROE',      align: 'right', defaultDir: 'desc' },
@@ -685,29 +710,62 @@ export default function Screener() {
               </button>
               {showScoreHelp && (
                 <div style={{ paddingBottom: 10, fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.8 }}>
-                  <table style={{ fontSize: 11, minWidth: 'auto', borderCollapse: 'collapse' }}>
-                    <tbody>
-                      {[
-                        ['CN-PER', '25点', 'CN-PER(=PER×(1-NC比率)) 3以下で満点。20以上で0点。株価ONでCN-PER使用、OFFで生PER'],
-                        ['PBR', '20点', 'PBR 0.3以下で満点。3以上で0点。低いほど割安'],
-                        ['ROE', '20点', 'ROE 15%以上で満点。高いほど収益性が高い'],
-                        ['営業利益率', '15点', '15%以上で満点。本業の稼ぐ力'],
-                        ['現金比率', '10点', '現金/総資産 30%以上で満点。財務安全性'],
-                        ['FCF', '10点', 'フリーキャッシュフローが正なら加点'],
-                      ].map(([name, pts, desc]) => (
-                        <tr key={name} style={{ borderBottom: '1px solid var(--border)' }}>
-                          <td style={{ padding: '3px 12px 3px 0', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{name}</td>
-                          <td style={{ padding: '3px 12px 3px 0', color: 'var(--accent)', whiteSpace: 'nowrap' }}>{pts}</td>
-                          <td style={{ padding: '3px 0' }}>{desc}</td>
-                        </tr>
-                      ))}
-                      <tr>
-                        <td style={{ padding: '3px 12px 3px 0', fontWeight: 700, color: 'var(--text)' }}>合計</td>
-                        <td style={{ padding: '3px 12px 3px 0', fontWeight: 700, color: 'var(--accent)' }}>100点</td>
-                        <td style={{ padding: '3px 0' }}>70点以上=優良（緑）、50点以上=良好（黄）、30点以上=普通（青）、30未満=要注意（赤）</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                  <div style={{ marginBottom: 8, padding: '4px 8px', background: 'var(--surface2)', borderRadius: 4 }}>
+                    <strong style={{ color: 'var(--text)' }}>総合スコア = Value × 60% + Quality × 40%</strong>
+                    <span style={{ marginLeft: 8, fontSize: 10 }}>（V: 割安度, Q: ビジネスの質）</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Value スコア（竹原式 / 100点）</div>
+                      <table style={{ fontSize: 11, minWidth: 'auto', borderCollapse: 'collapse' }}>
+                        <tbody>
+                          {[
+                            ['CN-PER', '25点', 'CN-PER 3以下で満点。20以上で0点'],
+                            ['PBR', '20点', '0.3以下で満点。3以上で0点'],
+                            ['ROE', '20点', '15%以上で満点'],
+                            ['営業利益率', '15点', '15%以上で満点'],
+                            ['現金比率', '10点', '現金/総資産 30%以上で満点'],
+                            ['FCF', '10点', '正なら加点'],
+                          ].map(([name, pts, desc]) => (
+                            <tr key={name} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td style={{ padding: '2px 8px 2px 0', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{name}</td>
+                              <td style={{ padding: '2px 8px 2px 0', color: 'var(--accent)', whiteSpace: 'nowrap' }}>{pts}</td>
+                              <td style={{ padding: '2px 0' }}>{desc}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Quality スコア（100点）</div>
+                      <table style={{ fontSize: 11, minWidth: 'auto', borderCollapse: 'collapse' }}>
+                        <tbody>
+                          {[
+                            ['営業利益率', '35点', '20%以上で満点。価格決定力'],
+                            ['ROE', '35点', '15%以上で満点。資本効率'],
+                            ['CF質', '30点', '営業CF/営業利益 ≥1.0で満点。利益の現金回収力'],
+                          ].map(([name, pts, desc]) => (
+                            <tr key={name} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td style={{ padding: '2px 8px 2px 0', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{name}</td>
+                              <td style={{ padding: '2px 8px 2px 0', color: 'var(--accent)', whiteSpace: 'nowrap' }}>{pts}</td>
+                              <td style={{ padding: '2px 0' }}>{desc}</td>
+                            </tr>
+                          ))}
+                          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                            <td style={{ padding: '2px 8px 2px 0', fontWeight: 600, color: 'var(--yellow)', whiteSpace: 'nowrap' }}>偽成長</td>
+                            <td style={{ padding: '2px 8px 2px 0', color: 'var(--red)', whiteSpace: 'nowrap' }}>減点</td>
+                            <td style={{ padding: '2px 0' }}>偽成長フラグ1つ=-15点, 2つ以上=-30点</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-dim)' }}>
+                    70点以上=<span style={{ color: 'var(--green)' }}>優良</span>
+                    50点以上=<span style={{ color: 'var(--yellow)' }}>良好</span>
+                    30点以上=<span style={{ color: 'var(--accent)' }}>普通</span>
+                    30未満=<span style={{ color: 'var(--red)' }}>要注意</span>
+                  </div>
                   <div style={{ marginTop: 8, padding: '6px 10px', background: 'var(--surface2)', borderRadius: 6 }}>
                     <strong style={{ color: 'var(--text)' }}>売り時目安の見方：</strong>
                     <br />目安株価 = EPS × 15（PER15倍ライン）。この株価を超えると竹原式では「割安感なし」。
@@ -840,7 +898,7 @@ export default function Screener() {
                         </td>
                         <td style={{ fontSize: 11, color: 'var(--text-dim)' }}>{row.industry || '-'}</td>
                         <td style={{ textAlign: 'right' }}>
-                          <ScoreBar score={row.takehara_score} />
+                          <TotalScoreCell row={row} />
                         </td>
                         <td className="number" style={{ textAlign: 'right', fontWeight: 500 }}>
                           {row.per != null ? `${Number(row.per).toFixed(1)}` : '-'}

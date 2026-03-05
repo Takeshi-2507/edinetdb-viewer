@@ -256,7 +256,7 @@ export default function CompanyDetail() {
   if (error)   return <div style={{ color: 'var(--red)' }}>エラー: {error}</div>
   if (!data)   return null
 
-  const { company: c, financials: fins, analysis: anal, takehara } = data
+  const { company: c, financials: fins, analysis: anal, takehara, quality, total_score } = data
   const latest = fins?.[0]
 
   // チャート用データ（古い順）
@@ -300,10 +300,21 @@ export default function CompanyDetail() {
                 信用 {c.credit_score} ({c.credit_rating})
               </span>
             )}
+            {total_score != null && (
+              <span className={`badge ${total_score >= 70 ? 'badge-green' : total_score >= 50 ? 'badge-blue' : total_score >= 30 ? 'badge-yellow' : 'badge-red'}`}>
+                総合 {total_score}
+              </span>
+            )}
             {takehara && (
               <span className={`badge ${takehara.score >= 70 ? 'badge-green' : takehara.score >= 50 ? 'badge-blue' : takehara.score >= 30 ? 'badge-yellow' : 'badge-red'}`}
                     title={Object.entries(takehara.parts || {}).map(([k, v]) => `${k}: ${v}`).join(', ')}>
-                竹原式 {takehara.score}
+                V:{takehara.score}
+              </span>
+            )}
+            {quality && (
+              <span className={`badge ${quality.score >= 70 ? 'badge-green' : quality.score >= 50 ? 'badge-blue' : quality.score >= 30 ? 'badge-yellow' : 'badge-red'}`}
+                    title={Object.entries(quality.parts || {}).map(([k, v]) => `${k}: ${v}`).join(', ')}>
+                Q:{quality.score}
               </span>
             )}
           </div>
