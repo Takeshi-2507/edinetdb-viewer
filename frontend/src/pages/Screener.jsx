@@ -327,7 +327,7 @@ const DEFAULT_FILTERS = {
   per_max: '', pbr_max: '', roe_min: '', equity_ratio_min: '',
   operating_margin_min: '', cash_ratio_min: '', fcf_positive: false,
   revenue_growth_min: '', ni_growth_min: '', dividend_min: '',
-  industry: '', tag: '', exclude_fake_growth: false, exclude_pachinko: true,
+  industry: '', exclude_industries: '機械', tag: '', exclude_fake_growth: false,
 }
 
 // sort_byのカンマ区切り文字列をパース
@@ -367,7 +367,7 @@ export default function Screener() {
     }
     if (appliedFilters.fcf_positive) p.fcf_positive = true
     if (appliedFilters.exclude_fake_growth) p.exclude_fake_growth = true
-    if (appliedFilters.exclude_pachinko) p.exclude_pachinko = true
+    if (appliedFilters.exclude_industries) p.exclude_industries = appliedFilters.exclude_industries
     if (appliedFilters.with_prices) p.with_prices = true
     return api.screener(p)
   }, [appliedFilters])
@@ -559,18 +559,13 @@ export default function Screener() {
             <span style={{ color: 'var(--yellow)' }}>見せかけ成長株を除外</span>
           </label>
           <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, paddingTop: 16 }}>
-            <input type="checkbox" checked={filters.exclude_pachinko}
-              onChange={e => setFilter('exclude_pachinko', e.target.checked)} />
-            <span style={{ fontWeight: 500 }}>パチンコ筐体メーカーを除外</span>
-          </label>
-          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, paddingTop: 16 }}>
             <input type="checkbox" checked={filters.tag === 'SBI取扱'}
               onChange={e => setFilter('tag', e.target.checked ? 'SBI取扱' : '')} />
             <span style={{ fontWeight: 500 }}>SBI取扱のみ</span>
           </label>
           {industries && (
             <label style={{ fontSize: 12 }}>
-              <span style={{ color: 'var(--text-dim)' }}>業種</span>
+              <span style={{ color: 'var(--text-dim)' }}>業種（絞り込み）</span>
               <select value={filters.industry} onChange={e => setFilter('industry', e.target.value)}>
                 <option value="">全業種</option>
                 {industries.map(i => (
@@ -578,6 +573,28 @@ export default function Screener() {
                 ))}
               </select>
             </label>
+          )}
+          {industries && (
+            <div style={{ fontSize: 12, gridColumn: '1 / -1' }}>
+              <span style={{ color: 'var(--red)', fontWeight: 500, display: 'block', marginBottom: 4 }}>除外する業種</span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 8px', maxHeight: 120, overflowY: 'auto', padding: 4, background: 'var(--surface2)', borderRadius: 6 }}>
+                {industries.map(i => {
+                  const excList = (filters.exclude_industries || '').split(',').map(s => s.trim()).filter(Boolean)
+                  const checked = excList.includes(i.industry)
+                  return (
+                    <label key={i.industry} style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', whiteSpace: 'nowrap', fontSize: 11 }}>
+                      <input type="checkbox" checked={checked} onChange={e => {
+                        const next = e.target.checked
+                          ? [...excList, i.industry]
+                          : excList.filter(x => x !== i.industry)
+                        setFilter('exclude_industries', next.join(','))
+                      }} />
+                      <span style={{ color: checked ? 'var(--red)' : 'var(--text-dim)' }}>{i.industry}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
           )}
         </div>
         <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
