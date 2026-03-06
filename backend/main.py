@@ -125,6 +125,103 @@ def fetch_balance_sheet(ticker: str) -> dict | None:
         return None
 
 
+# --------------- 株価ヒストリーキャッシュ (Momentum Score 用) ---------------
+_HIST_CACHE_FILE = Path(__file__).parent.parent / "data" / "hist_cache.json"
+HIST_TTL = 86400  # 1日キャッシュ (日足データは当日中は変わらない)
+
+def _load_hist_cache() -> dict[str, tuple[float, list]]:
+    if _HIST_CACHE_FILE.exists():
+        try:
+            raw = json.loads(_HIST_CACHE_FILE.read_text(encoding="utf-8"))
+            return {k: (v[0], v[1]) for k, v in raw.items()}
+        except Exception:
+            pass
+    return {}
+
+def _save_hist_cache(cache: dict):
+    try:
+        _HIST_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _HIST_CACHE_FILE.write_text(
+            json.dumps(cache, ensure_ascii=False), encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+_hist_cache: dict[str, tuple[float, list]] = _load_hist_cache()
+_hist_lock = threading.Lock()
+
+
+def fetch_price_history(ticker: str, period: str = "1y") -> list[dict] | None:
+    """yfinance で過去株価 (日足) を取得。[{date, close, volume}, ...]
+    1日キャッシュ。Momentum Score 算出用。
+    """
+    now = time()
+    with _hist_lock:
+        if ticker in _hist_cache:
+            ts, data = _hist_cache[ticker]
+            if now - ts < HIST_TTL:
+                return data
+
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        df = t.history(period=period, interval="1d")
+        if df is None or df.empty:
+            return None
+        records = []
+        for idx, row in df.iterrows():
+            records.append({
+                "date": idx.strftime("%Y-%m-%d"),
+                "close": round(float(row["Close"]), 1),
+                "volume": int(row["Volume"]) if row.get("Volume") else 0,
+            })
+        with _hist_lock:
+            _hist_cache[ticker] = (now, records)
+            _save_hist_cache(_hist_cache)
+        return records
+    except Exception:
+        # キャッシュにstaleデータがあれば返す
+        with _hist_lock:
+            if ticker in _hist_cache:
+                return _hist_cache[ticker][1]
+        return None
+
+
+# --------------- TOPIX ベンチマーク (Relative Strength 用) ---------------
+_topix_cache: tuple[float, list] | None = None
+_topix_lock = threading.Lock()
+
+def fetch_topix_history(period: str = "1y") -> list[dict] | None:
+    """TOPIX (^TPX) の日足データを取得。RS計算のベンチマーク用。"""
+    global _topix_cache
+    now = time()
+    with _topix_lock:
+        if _topix_cache is not None:
+            ts, data = _topix_cache
+            if now - ts < HIST_TTL:
+                return data
+    try:
+        import yfinance as yf
+        df = yf.Ticker("^TPX").history(period=period, interval="1d")
+        if df is None or df.empty:
+            # TOPIX取れない場合は日経225で代替
+            df = yf.Ticker("^N225").history(period=period, interval="1d")
+        if df is None or df.empty:
+            return None
+        records = [
+            {"date": idx.strftime("%Y-%m-%d"), "close": round(float(row["Close"]), 1)}
+            for idx, row in df.iterrows()
+        ]
+        with _topix_lock:
+            _topix_cache = (now, records)
+        return records
+    except Exception:
+        with _topix_lock:
+            if _topix_cache is not None:
+                return _topix_cache[1]
+        return None
+
+
 def _sec_code_to_ticker(securities_code: str | int | None) -> str | None:
     """証券コード(5桁) → Yahoo Finance ticker (4桁.T)"""
     if not securities_code:
@@ -235,46 +332,306 @@ def calc_takehara_score(d: dict) -> tuple[float, dict]:
 
 def calc_quality_score(d: dict) -> tuple[float, dict]:
     """Quality スコアを計算 (0-100点)。ビジネスの質を評価。
-    現在3指標。gross_margin が取得できたら4指標に拡張予定。
+    4指標: 粗利率(25点) + 営業利益率(30点) + ROE(25点) + CF質(20点)
+    gross_profit が無い企業は 3指標フォールバック(配点再配分)。
     Returns: (score, parts_dict)
     """
     score = 0.0
     parts: dict[str, float] = {}
 
-    # 営業利益率 (35点): 20%以上で満点
+    # gross_margin の有無で配点を切り替え
+    rev = d.get("revenue")
+    gp = d.get("gross_profit")
+    has_gm = gp is not None and rev and rev > 0
+
+    if has_gm:
+        # 4指標モード: gross_margin 25 + op_margin 30 + roe 25 + cf_quality 20
+        w_gm, w_om, w_roe, w_cf = 25, 30, 25, 20
+    else:
+        # 3指標フォールバック: op_margin 35 + roe 35 + cf_quality 30
+        w_gm, w_om, w_roe, w_cf = 0, 35, 35, 30
+
+    # 粗利率 (25点): 40%以上で満点。価格決定力・ブランド力
+    if has_gm:
+        gm = gp / rev
+        if gm > 0:
+            s = max(0, min(w_gm, w_gm * min(1, gm / 0.40)))
+            score += s
+            parts["gross_margin"] = round(s, 1)
+
+    # 営業利益率: 20%以上で満点
     om = d.get("operating_margin")
     if om is None:
-        rev = d.get("revenue")
         oi = d.get("operating_income")
         if rev and rev > 0 and oi is not None:
             om = oi / rev
     if om is not None and om > 0:
-        s = max(0, min(35, 35 * min(1, om / 0.20)))
+        s = max(0, min(w_om, w_om * min(1, om / 0.20)))
         score += s
         parts["operating_margin"] = round(s, 1)
 
-    # ROE (35点): 15%以上で満点
+    # ROE: 15%以上で満点
     roe = d.get("roe")
     if roe is not None and roe > 0:
-        s = max(0, min(35, 35 * min(1, roe / 0.15)))
+        s = max(0, min(w_roe, w_roe * min(1, roe / 0.15)))
         score += s
         parts["roe"] = round(s, 1)
 
-    # CF Quality (30点): 営業CF/営業利益 >= 1.0 で満点
-    # 利益が現金として回収できているかの指標 (accrual quality)
+    # CF Quality: 営業CF/営業利益 >= 1.0 で満点
     cf_op = d.get("cf_operating")
     oi = d.get("operating_income")
     if cf_op is not None and oi is not None and oi > 0:
         cf_quality = cf_op / oi
-        s = max(0, min(30, 30 * min(1, cf_quality / 1.0)))
+        s = max(0, min(w_cf, w_cf * min(1, cf_quality / 1.0)))
         score += s
         parts["cf_quality"] = round(s, 1)
 
-    # 将来拡張: gross_margin が取得できたら配点を再調整
-    # gross_margin (25点): 40%以上で満点
-    # → その場合: op_margin 30, roe 25, cf_quality 20, gross_margin 25
-
+    parts["_mode"] = "4ind" if has_gm else "3ind"
     return round(score, 1), parts
+
+
+# ════════════════════════════════════════════════════════════
+# Phase 2 スケルトン: Momentum Score (C層)
+# ════════════════════════════════════════════════════════════
+def calc_momentum_score(
+    d: dict,
+    price_history: list[dict] | None = None,
+    topix_history: list[dict] | None = None,
+) -> tuple[float, dict]:
+    """Momentum スコアを計算 (0-100点)。株価の勢い・テクニカル指標を評価。
+
+    price_history: [{"date": "...", "close": 1234.0, "volume": 100000}, ...]
+    topix_history: [{"date": "...", "close": 2800.0}, ...]  (RS計算用)
+
+    5指標:
+      - 移動平均乖離率 (25点): 株価 vs 75日MA
+      - ゴールデンクロス (20点): 25日MA vs 75日MA
+      - 相対モメンタム RS (25点): 3ヶ月リターン vs TOPIX
+      - 出来高トレンド (15点): 直近20日平均出来高 vs 60日平均
+      - ボラティリティ調整 (15点): 低ボラ = 安定上昇を加点
+    """
+    parts: dict[str, float] = {}
+
+    if price_history is None or len(price_history) < 30:
+        return 0.0, {"_status": "no_data"}
+
+    closes = [p["close"] for p in price_history]
+    volumes = [p.get("volume", 0) for p in price_history]
+    n = len(closes)
+
+    # ── 1) 移動平均乖離率 (25点) ──
+    # 75日MA の上にいれば上昇トレンド。 -5%以下=0点, +10%以上=満点
+    if n >= 75:
+        ma75 = sum(closes[-75:]) / 75
+        if ma75 > 0:
+            deviation = (closes[-1] - ma75) / ma75
+            # -5%で0点, +10%で25点 (線形補間)
+            s = max(0.0, min(25.0, 25.0 * (deviation + 0.05) / 0.15))
+            parts["ma_deviation"] = round(s, 1)
+
+    # ── 2) ゴールデンクロス / デッドクロス (20点) ──
+    # 25日MA > 75日MA → GC状態 (上昇トレンド) → 20点
+    # 25日MA < 75日MA → DC状態 → 0点
+    # 乖離率で段階的にスコア (微妙なGCは中間点)
+    if n >= 75:
+        ma25 = sum(closes[-25:]) / 25
+        ma75 = sum(closes[-75:]) / 75
+        if ma75 > 0:
+            gc_ratio = (ma25 - ma75) / ma75  # +なら GC, -なら DC
+            # -3%以下=0点, +3%以上=20点
+            s = max(0.0, min(20.0, 20.0 * (gc_ratio + 0.03) / 0.06))
+            parts["golden_cross"] = round(s, 1)
+
+    # ── 3) 相対モメンタム RS (25点) ──
+    # 3ヶ月リターンが TOPIX を上回っていれば加点
+    if n >= 63:
+        ret_3m = (closes[-1] - closes[-63]) / closes[-63] if closes[-63] > 0 else 0
+        topix_ret_3m = 0.0
+        if topix_history and len(topix_history) >= 63:
+            tc = [t["close"] for t in topix_history]
+            if tc[-63] > 0:
+                topix_ret_3m = (tc[-1] - tc[-63]) / tc[-63]
+
+        # 相対リターン = 個別 - TOPIX
+        rs = ret_3m - topix_ret_3m
+        # -10%以下=0点, +15%以上=25点
+        s = max(0.0, min(25.0, 25.0 * (rs + 0.10) / 0.25))
+        parts["relative_strength"] = round(s, 1)
+
+    # ── 4) 出来高トレンド (15点) ──
+    # 直近20日平均出来高 vs 60日平均。出来高増加=需要増の兆候
+    valid_vols = [v for v in volumes if v > 0]
+    if len(valid_vols) >= 60:
+        vol20 = sum(valid_vols[-20:]) / 20
+        vol60 = sum(valid_vols[-60:]) / 60
+        if vol60 > 0:
+            vol_ratio = vol20 / vol60
+            # 0.8以下=0点, 1.5以上=15点
+            s = max(0.0, min(15.0, 15.0 * (vol_ratio - 0.8) / 0.7))
+            parts["volume_trend"] = round(s, 1)
+
+    # ── 5) ボラティリティ調整 (15点) ──
+    # 低ボラ(安定上昇)を加点。日本株の平均年率ボラは30-40%程度。
+    # 25%以下=15点, 50%以上=0点 (日本株向け閾値)
+    if n >= 21:
+        daily_returns = []
+        for i in range(-20, 0):
+            if closes[i - 1] > 0:
+                daily_returns.append((closes[i] - closes[i - 1]) / closes[i - 1])
+        if len(daily_returns) >= 15:
+            mean_r = sum(daily_returns) / len(daily_returns)
+            var_r = sum((r - mean_r) ** 2 for r in daily_returns) / len(daily_returns)
+            vol_annual = var_r ** 0.5 * (252 ** 0.5)  # 年率ボラティリティ
+            # 25%以下=15点, 50%以上=0点
+            s = max(0.0, min(15.0, 15.0 * (1.0 - (vol_annual - 0.25) / 0.25)))
+            parts["volatility"] = round(s, 1)
+
+    score = sum(v for k, v in parts.items() if not k.startswith("_"))
+    return round(min(100.0, score), 1), parts
+
+
+# ════════════════════════════════════════════════════════════
+# Phase 3 スケルトン: Event Score (D層)
+# ════════════════════════════════════════════════════════════
+def calc_event_score(d: dict, events: list[dict] | None = None) -> tuple[float, dict]:
+    """Event スコアを計算 (0-100点)。IRイベント・適時開示の質を評価。
+
+    Phase 3 で実装予定。EDINET API / TDnet データが必要。
+
+    計画中の指標:
+      - 自社株買い発表 (25点): 直近6ヶ月の自社株買い → 株主還元姿勢
+      - 増配・配当政策 (25点): 増配発表/配当性向改善
+      - 業績修正インパクト (25点): 上方修正=加点, 下方修正=減点
+      - インサイダー動向 (25点): 役員買い=加点, 大量売り=減点
+
+    events: [{"type": "buyback", "date": "...", "amount": ...}, ...] のリスト
+
+    Returns: (score, parts_dict)
+    """
+    # TODO: Phase 3 実装時にアクティブ化
+    parts: dict[str, float] = {}
+
+    if events is None or len(events) == 0:
+        return 0.0, {"_status": "no_data"}
+
+    # ---- 実装テンプレート (コメントアウト) ----
+    # from datetime import datetime, timedelta
+    # now = datetime.now()
+    # recent = [e for e in events if (now - datetime.fromisoformat(e["date"])).days <= 180]
+    #
+    # # 自社株買い (25点)
+    # buybacks = [e for e in recent if e["type"] == "buyback"]
+    # if buybacks:
+    #     parts["buyback"] = 25.0
+    #
+    # # 増配 (25点)
+    # div_events = [e for e in recent if e["type"] in ("dividend_increase", "special_dividend")]
+    # if div_events:
+    #     parts["dividend"] = 25.0
+    #
+    # # 業績修正 (25点)
+    # revisions = [e for e in recent if e["type"] in ("upward_revision", "downward_revision")]
+    # for rev in revisions:
+    #     if rev["type"] == "upward_revision":
+    #         parts["revision"] = parts.get("revision", 0) + 12.5
+    #     else:
+    #         parts["revision"] = parts.get("revision", 0) - 12.5
+    # parts["revision"] = max(0, min(25, parts.get("revision", 0)))
+    #
+    # # インサイダー動向 (25点)
+    # insider = [e for e in recent if e["type"] in ("insider_buy", "insider_sell")]
+    # # ...
+    #
+    # score = sum(v for k, v in parts.items() if not k.startswith("_"))
+
+    return 0.0, {"_status": "not_implemented"}
+
+
+# ════════════════════════════════════════════════════════════
+# Phase 3 スケルトン: AI Qualitative Score (E層)
+# ════════════════════════════════════════════════════════════
+def calc_ai_qualitative_score(d: dict, text_data: dict | None = None) -> tuple[float, dict]:
+    """AI定性スコアを計算 (0-100点)。LLMを使った定性評価。
+
+    Phase 3 (後半) で実装予定。LLM API (Claude or GPT) が必要。
+
+    計画中の指標:
+      - 事業モート評価 (30点): 有報の事業説明から参入障壁・競争優位性を評価
+      - 経営陣の質 (20点): 社長メッセージ・ガバナンス記述から評価
+      - リスク要因深刻度 (25点): リスク情報の深刻度を判定 (低リスク=高得点)
+      - ESG/サステナビリティ (25点): ESG開示の充実度
+
+    text_data: {
+        "business_description": "...",  # 有報の事業の内容
+        "risk_factors": "...",          # 事業等のリスク
+        "management_message": "...",    # 経営者メッセージ
+        "governance": "...",            # ガバナンス
+    }
+
+    Returns: (score, parts_dict)
+    """
+    # TODO: Phase 3 後半で実装。LLM APIコスト要検討。
+    parts: dict[str, float] = {}
+
+    if text_data is None:
+        return 0.0, {"_status": "no_data"}
+
+    # ---- 実装テンプレート (コメントアウト) ----
+    # import anthropic  # or openai
+    #
+    # prompt = f"""以下の企業情報を読み、0-100点で評価してください。
+    # 事業内容: {text_data.get("business_description", "N/A")[:2000]}
+    # リスク: {text_data.get("risk_factors", "N/A")[:1000]}
+    # """
+    #
+    # # LLM呼び出し → JSONレスポンスをパース
+    # # response = client.messages.create(...)
+    # # parsed = json.loads(response.content[0].text)
+    #
+    # # parts["moat"] = parsed.get("moat_score", 0)
+    # # parts["management"] = parsed.get("management_score", 0)
+    # # parts["risk"] = parsed.get("risk_score", 0)
+    # # parts["esg"] = parsed.get("esg_score", 0)
+    #
+    # score = sum(v for k, v in parts.items() if not k.startswith("_"))
+
+    return 0.0, {"_status": "not_implemented"}
+
+
+# ════════════════════════════════════════════════════════════
+# 統合スコア計算ヘルパー (全5層)
+# ════════════════════════════════════════════════════════════
+# 現在の重み: Value 60% + Quality 40% (Phase 1)
+# Phase 2 以降の重み案:
+#   Phase 2: Value 40% + Quality 30% + Momentum 30%
+#   Phase 3: Value 30% + Quality 25% + Momentum 20% + Event 15% + AI 10%
+SCORE_WEIGHTS = {
+    "phase1": {"value": 0.6, "quality": 0.4},
+    "phase2": {"value": 0.4, "quality": 0.3, "momentum": 0.3},
+    "phase3": {"value": 0.30, "quality": 0.25, "momentum": 0.20, "event": 0.15, "ai": 0.10},
+}
+CURRENT_PHASE = "phase2"  # Phase 2: Value 40% + Quality 30% + Momentum 30%
+
+
+def calc_total_score(
+    value: float, quality: float,
+    momentum: float = 0.0, event: float = 0.0, ai: float = 0.0,
+    phase: str | None = None,
+) -> float:
+    """全レイヤーの加重平均で統合スコアを計算。
+    phase が None なら CURRENT_PHASE を使う。
+    未実装レイヤー (score=0) は重み再配分しない（0として計算される）。
+    """
+    ph = phase or CURRENT_PHASE
+    w = SCORE_WEIGHTS.get(ph, SCORE_WEIGHTS["phase1"])
+    total = (
+        value * w.get("value", 0)
+        + quality * w.get("quality", 0)
+        + momentum * w.get("momentum", 0)
+        + event * w.get("event", 0)
+        + ai * w.get("ai", 0)
+    )
+    return round(total, 1)
 
 
 def calc_target_prices(eps: float | None, bps: float | None) -> dict:
@@ -384,7 +741,7 @@ def list_companies(
                    COALESCE(fc.fiscal_years, 0) AS fiscal_years,
                    f.per, f.roe, f.eps, f.bps, f.revenue, f.operating_income,
                    f.net_income, f.total_assets, f.cash, f.equity_ratio, f.dividend,
-                   f.cf_operating, f.cf_investing,
+                   f.cf_operating, f.cf_investing, f.gross_profit,
                    r.fcf
             FROM companies c
             LEFT JOIN financials f ON f.edinet_code = c.edinet_code AND f.fiscal_year = ?
@@ -411,12 +768,19 @@ def list_companies(
             q_score, q_parts = calc_quality_score(d)
             d["quality_score"] = q_score
             d["quality_parts"] = q_parts
-            d["total_score"] = round(score * 0.6 + q_score * 0.4, 1)
+            # Phase 2/3 スコア (未実装 → 0点、重みに影響しない)
+            d["momentum_score"] = 0.0
+            d["event_score"] = 0.0
+            d["ai_score"] = 0.0
+            d["total_score"] = calc_total_score(score, q_score)
         else:
             d["takehara_score"] = None
             d["score_parts"] = None
             d["quality_score"] = None
             d["quality_parts"] = None
+            d["momentum_score"] = None
+            d["event_score"] = None
+            d["ai_score"] = None
             d["total_score"] = None
         companies.append(d)
 
@@ -471,6 +835,9 @@ def get_company(edinet_code: str) -> dict:
     # 竹原式スコアを最新年度データから計算
     takehara = None
     quality = None
+    momentum = None
+    event = None
+    ai_qual = None
     total_score = None
     if fins_list:
         latest = fins_list[0]
@@ -480,7 +847,11 @@ def get_company(edinet_code: str) -> dict:
             takehara = {"score": score, "parts": parts}
             q_score, q_parts = calc_quality_score(score_input)
             quality = {"score": q_score, "parts": q_parts}
-            total_score = round(score * 0.6 + q_score * 0.4, 1)
+            # Phase 2/3 スコア (未実装 → 0点)
+            momentum = {"score": 0.0, "parts": {"_status": "not_implemented"}}
+            event = {"score": 0.0, "parts": {"_status": "not_implemented"}}
+            ai_qual = {"score": 0.0, "parts": {"_status": "not_implemented"}}
+            total_score = calc_total_score(score, q_score)
 
     return {
         "company": company_dict,
@@ -488,6 +859,9 @@ def get_company(edinet_code: str) -> dict:
         "analysis": row_to_dict(analysis) if analysis else None,
         "takehara": takehara,
         "quality": quality,
+        "momentum": momentum,
+        "event": event,
+        "ai_qualitative": ai_qual,
         "total_score": total_score,
     }
 
@@ -734,6 +1108,7 @@ def screener(
                 f.cf_operating,
                 f.cf_investing,
                 f.payout_ratio,
+                f.gross_profit,
                 -- 計算カラム
                 CASE WHEN f.per IS NOT NULL AND f.roe IS NOT NULL AND f.roe > 0
                      THEN f.per * f.roe
@@ -890,8 +1265,20 @@ def screener(
         quality_score, quality_parts = calc_quality_score(d)
         d["quality_score"] = quality_score
         d["quality_parts"] = quality_parts
-        # 統合スコア (Value 60% + Quality 40%)
-        d["total_score"] = round(value_score * 0.6 + quality_score * 0.4, 1)
+        # Momentum スコア (Phase 2 — 未実装、データなしで0点)
+        momentum_score, momentum_parts = calc_momentum_score(d)
+        d["momentum_score"] = momentum_score
+        d["momentum_parts"] = momentum_parts
+        # Event スコア (Phase 3 — 未実装)
+        event_score, event_parts = calc_event_score(d)
+        d["event_score"] = event_score
+        d["event_parts"] = event_parts
+        # AI定性スコア (Phase 3 — 未実装)
+        ai_score, ai_parts = calc_ai_qualitative_score(d)
+        d["ai_score"] = ai_score
+        d["ai_parts"] = ai_parts
+        # 統合スコア (現在 Phase 1: Value 60% + Quality 40%)
+        d["total_score"] = calc_total_score(value_score, quality_score, momentum_score, event_score, ai_score)
         d.update(calc_target_prices(d.get("eps"), d.get("bps")))
 
         results.append(d)
@@ -1015,8 +1402,50 @@ def screener(
                     d["takehara_score"] - old_per_score + cn_per_score, 1
                 )
                 # total_score も再計算
-                d["total_score"] = round(
-                    d["takehara_score"] * 0.6 + d.get("quality_score", 0) * 0.4, 1
+                d["total_score"] = calc_total_score(
+                    d["takehara_score"], d.get("quality_score", 0),
+                    d.get("momentum_score", 0), d.get("event_score", 0), d.get("ai_score", 0),
+                )
+
+    # ── Momentum Score 算出 (with_prices=true 時のみ) ──
+    if with_prices or has_price_sort:
+        from concurrent.futures import ThreadPoolExecutor
+        import time as _time2
+
+        # TOPIX を1回だけ取得
+        topix_hist = fetch_topix_history()
+
+        def _fetch_hist(code_ticker):
+            code, ticker = code_ticker
+            try:
+                hist = fetch_price_history(ticker)
+                return code, hist
+            except Exception:
+                return code, None
+
+        hist_map = {}
+        items_h = list(tickers.items())
+        for i in range(0, len(items_h), batch_size):
+            batch = items_h[i:i + batch_size]
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                for code, hist in executor.map(_fetch_hist, batch):
+                    if hist:
+                        hist_map[code] = hist
+            if i + batch_size < len(items_h):
+                _time2.sleep(0.3)
+
+        # 各銘柄のMomentumスコアを再計算
+        for d in results:
+            code = d.get("securities_code")
+            hist = hist_map.get(code)
+            if hist and len(hist) >= 30:
+                m_score, m_parts = calc_momentum_score(d, hist, topix_hist)
+                d["momentum_score"] = m_score
+                d["momentum_parts"] = m_parts
+                # total_score 再計算
+                d["total_score"] = calc_total_score(
+                    d["takehara_score"], d.get("quality_score", 0),
+                    m_score, d.get("event_score", 0), d.get("ai_score", 0),
                 )
 
     # ── 見せかけ成長株検出 ──
@@ -1058,8 +1487,9 @@ def screener(
             d["quality_score"] = max(0, round(d.get("quality_score", 0) - penalty, 1))
             d["quality_parts"]["fake_growth_penalty"] = -penalty
             # total_score再計算
-            d["total_score"] = round(
-                d["takehara_score"] * 0.6 + d["quality_score"] * 0.4, 1
+            d["total_score"] = calc_total_score(
+                d["takehara_score"], d["quality_score"],
+                d.get("momentum_score", 0), d.get("event_score", 0), d.get("ai_score", 0),
             )
 
     # 見せかけ成長株除外フィルタ

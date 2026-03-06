@@ -16,6 +16,33 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 API_BASE = "https://edinetdb.jp/v1"
+MAX_RETRIES = 5          # 429 リトライ上限
+RETRY_BASE_WAIT = 30     # 初回リトライ待ち (秒)
+
+
+async def _api_get(
+    client: httpx.AsyncClient,
+    url: str,
+    api_key: str,
+    params: dict | None = None,
+    timeout: float = 30.0,
+) -> httpx.Response:
+    """429 (Too Many Requests) 時にエクスポネンシャルバックオフでリトライする GET ラッパー"""
+    for attempt in range(MAX_RETRIES + 1):
+        resp = await client.get(
+            url,
+            params=params,
+            headers={"X-API-Key": api_key},
+            timeout=timeout,
+        )
+        if resp.status_code != 429:
+            return resp
+        # 429: リトライ
+        wait = RETRY_BASE_WAIT * (2 ** attempt)  # 30s, 60s, 120s, 240s, 480s
+        print(f"  ⚠ 429 Rate Limited ({url.split('/')[-1]}), waiting {wait}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+        await asyncio.sleep(wait)
+    # 全リトライ失敗
+    return resp  # 最後の 429 レスポンスを返す（呼び出し側で raise_for_status）
 DB_PATH = Path(__file__).parent.parent / "data" / "edinet.db"
 
 
@@ -68,6 +95,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             cf_operating     REAL,
             cf_investing     REAL,
             cf_financing     REAL,
+            gross_profit     REAL,
             accounting_std   TEXT,
             UNIQUE(edinet_code, fiscal_year)
         );
@@ -163,8 +191,9 @@ def upsert_financials(conn: sqlite3.Connection, edinet_code: str, records: list[
                 (edinet_code, fiscal_year, revenue, operating_income, ordinary_income,
                  net_income, total_assets, net_assets, roe, equity_ratio,
                  eps, bps, dividend, per, payout_ratio,
-                 cash, cf_operating, cf_investing, cf_financing, accounting_std)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 cash, cf_operating, cf_investing, cf_financing, gross_profit,
+                 accounting_std)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(edinet_code, fiscal_year) DO UPDATE SET
                 revenue          = excluded.revenue,
                 operating_income = excluded.operating_income,
@@ -183,6 +212,7 @@ def upsert_financials(conn: sqlite3.Connection, edinet_code: str, records: list[
                 cf_operating     = excluded.cf_operating,
                 cf_investing     = excluded.cf_investing,
                 cf_financing     = excluded.cf_financing,
+                gross_profit     = excluded.gross_profit,
                 accounting_std   = excluded.accounting_std
         """, (
             edinet_code,
@@ -204,6 +234,7 @@ def upsert_financials(conn: sqlite3.Connection, edinet_code: str, records: list[
             r.get("cf_operating"),
             r.get("cf_investing"),
             r.get("cf_financing"),
+            r.get("gross_profit"),
             r.get("accounting_standard"),
         ))
 
@@ -215,10 +246,9 @@ async def fetch_all_companies(client: httpx.AsyncClient, api_key: str) -> list[d
     per_page = 5000  # max
 
     while True:
-        resp = await client.get(
-            f"{API_BASE}/companies",
+        resp = await _api_get(
+            client, f"{API_BASE}/companies", api_key,
             params={"per_page": per_page, "page": page},
-            headers={"X-API-Key": api_key},
             timeout=60.0,
         )
         resp.raise_for_status()
@@ -244,11 +274,9 @@ async def fetch_financials(
     edinet_code: str,
     years: int = 10,
 ) -> list[dict]:
-    resp = await client.get(
-        f"{API_BASE}/companies/{edinet_code}/financials",
+    resp = await _api_get(
+        client, f"{API_BASE}/companies/{edinet_code}/financials", api_key,
         params={"years": years},
-        headers={"X-API-Key": api_key},
-        timeout=30.0,
     )
     if resp.status_code == 404:
         return []
@@ -263,11 +291,9 @@ async def fetch_ratios(
     edinet_code: str,
     years: int = 5,
 ) -> list[dict]:
-    resp = await client.get(
-        f"{API_BASE}/companies/{edinet_code}/ratios",
+    resp = await _api_get(
+        client, f"{API_BASE}/companies/{edinet_code}/ratios", api_key,
         params={"years": years},
-        headers={"X-API-Key": api_key},
-        timeout=30.0,
     )
     if resp.status_code == 404:
         return []
@@ -327,10 +353,8 @@ async def fetch_analysis(
     api_key: str,
     edinet_code: str,
 ) -> dict | None:
-    resp = await client.get(
-        f"{API_BASE}/companies/{edinet_code}/analysis",
-        headers={"X-API-Key": api_key},
-        timeout=30.0,
+    resp = await _api_get(
+        client, f"{API_BASE}/companies/{edinet_code}/analysis", api_key,
     )
     if resp.status_code in (404, 204):
         return None

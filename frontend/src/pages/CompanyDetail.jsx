@@ -256,7 +256,7 @@ export default function CompanyDetail() {
   if (error)   return <div style={{ color: 'var(--red)' }}>エラー: {error}</div>
   if (!data)   return null
 
-  const { company: c, financials: fins, analysis: anal, takehara, quality, total_score } = data
+  const { company: c, financials: fins, analysis: anal, takehara, quality, momentum, event, ai_qualitative, total_score } = data
   const latest = fins?.[0]
 
   // チャート用データ（古い順）
@@ -315,6 +315,24 @@ export default function CompanyDetail() {
               <span className={`badge ${quality.score >= 70 ? 'badge-green' : quality.score >= 50 ? 'badge-blue' : quality.score >= 30 ? 'badge-yellow' : 'badge-red'}`}
                     title={Object.entries(quality.parts || {}).map(([k, v]) => `${k}: ${v}`).join(', ')}>
                 Q:{quality.score}
+              </span>
+            )}
+            {/* Momentum スコア (Phase 2 実装済) */}
+            {momentum && momentum.score != null && (
+              <span className={`badge ${momentum.score >= 60 ? 'badge-green' : momentum.score >= 40 ? 'badge-blue' : momentum.score >= 20 ? 'badge-yellow' : 'badge-red'}`}
+                    title={Object.entries(momentum.parts || {}).filter(([k]) => !k.startsWith('_')).map(([k, v]) => `${k}: ${v}`).join(', ')}>
+                M:{momentum.score}
+              </span>
+            )}
+            {/* Phase 3 スコア (未実装 → グレー表示) */}
+            {event && event.score != null && (
+              <span className="badge" style={{ opacity: 0.4 }} title="Phase 3 で実装予定">
+                D:{event.score}
+              </span>
+            )}
+            {ai_qualitative && ai_qualitative.score != null && (
+              <span className="badge" style={{ opacity: 0.4 }} title="Phase 3 で実装予定">
+                E:{ai_qualitative.score}
               </span>
             )}
           </div>

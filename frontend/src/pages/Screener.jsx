@@ -41,10 +41,12 @@ function TotalScoreCell({ row }) {
   const total = row.total_score
   const value = row.takehara_score
   const quality = row.quality_score
+  const momentum = row.momentum_score
   if (total == null) return <span style={{ color: 'var(--text-dim)' }}>-</span>
   const color = total >= 70 ? 'var(--green)' : total >= 50 ? 'var(--yellow)' : total >= 30 ? 'var(--accent)' : 'var(--red)'
   const vColor = value >= 70 ? 'var(--green)' : value >= 50 ? 'var(--yellow)' : 'var(--text-dim)'
   const qColor = quality >= 70 ? 'var(--green)' : quality >= 50 ? 'var(--yellow)' : 'var(--text-dim)'
+  const mColor = momentum > 0 ? (momentum >= 60 ? 'var(--green)' : momentum >= 40 ? 'var(--yellow)' : 'var(--text-dim)') : 'var(--text-dim)'
   const ratio = Math.min(100, (total / 100) * 100)
   return (
     <div style={{ minWidth: 90 }}>
@@ -57,6 +59,7 @@ function TotalScoreCell({ row }) {
       <div style={{ display: 'flex', gap: 6, marginTop: 2, fontSize: 10, lineHeight: 1.2 }}>
         <span style={{ color: vColor }}>V:{value ?? '-'}</span>
         <span style={{ color: qColor }}>Q:{quality ?? '-'}</span>
+        {momentum > 0 && <span style={{ color: mColor }}>M:{momentum}</span>}
       </div>
     </div>
   )
@@ -125,7 +128,7 @@ const SORTABLE_COLUMNS = [
   { key: 'company_name', label: '銘柄', align: 'left', defaultDir: 'asc' },
   { key: 'industry',     label: '業種', align: 'left', defaultDir: 'asc' },
   { key: 'score',        label: '総合', align: 'right', defaultDir: 'desc',
-    tooltip: '総合 = Value×60% + Quality×40%\nValue(竹原式): PER+PBR+ROE+営業利益率+現金+FCF\nQuality: 営業利益率+ROE+CF質' },
+    tooltip: '総合 = Value×40% + Quality×30% + Momentum×30%\nValue(竹原式): PER+PBR+ROE+営業利益率+現金+FCF\nQuality: 粗利率+営業利益率+ROE+CF質\nMomentum: MA乖離率+GC/DC+RS+出来高+ボラ\n※株価OFF時はMomentum=0 (V/Qのみ)' },
   { key: 'per',              label: 'PER',      align: 'right', defaultDir: 'asc' },
   { key: 'pbr',              label: 'PBR',      align: 'right', defaultDir: 'asc' },
   { key: 'roe',              label: 'ROE',      align: 'right', defaultDir: 'desc' },
@@ -728,8 +731,8 @@ export default function Screener() {
               {showScoreHelp && (
                 <div style={{ paddingBottom: 10, fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.8 }}>
                   <div style={{ marginBottom: 8, padding: '4px 8px', background: 'var(--surface2)', borderRadius: 4 }}>
-                    <strong style={{ color: 'var(--text)' }}>総合スコア = Value × 60% + Quality × 40%</strong>
-                    <span style={{ marginLeft: 8, fontSize: 10 }}>（V: 割安度, Q: ビジネスの質）</span>
+                    <strong style={{ color: 'var(--text)' }}>総合スコア = Value × 40% + Quality × 30% + Momentum × 30%</strong>
+                    <span style={{ marginLeft: 8, fontSize: 10 }}>（V: 割安度, Q: ビジネスの質, M: 株価の勢い）Phase 2</span>
                   </div>
                   <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                     <div>
@@ -758,9 +761,10 @@ export default function Screener() {
                       <table style={{ fontSize: 11, minWidth: 'auto', borderCollapse: 'collapse' }}>
                         <tbody>
                           {[
-                            ['営業利益率', '35点', '20%以上で満点。価格決定力'],
-                            ['ROE', '35点', '15%以上で満点。資本効率'],
-                            ['CF質', '30点', '営業CF/営業利益 ≥1.0で満点。利益の現金回収力'],
+                            ['粗利率', '25点', '40%以上で満点。ブランド力・価格決定力'],
+                            ['営業利益率', '30点', '20%以上で満点。コスト管理力'],
+                            ['ROE', '25点', '15%以上で満点。資本効率'],
+                            ['CF質', '20点', '営業CF/営業利益 ≥1.0で満点。現金回収力'],
                           ].map(([name, pts, desc]) => (
                             <tr key={name} style={{ borderBottom: '1px solid var(--border)' }}>
                               <td style={{ padding: '2px 8px 2px 0', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{name}</td>
@@ -773,8 +777,55 @@ export default function Screener() {
                             <td style={{ padding: '2px 8px 2px 0', color: 'var(--red)', whiteSpace: 'nowrap' }}>減点</td>
                             <td style={{ padding: '2px 0' }}>偽成長フラグ1つ=-15点, 2つ以上=-30点</td>
                           </tr>
+                          <tr>
+                            <td colSpan={3} style={{ padding: '2px 0', fontSize: 10, color: 'var(--text-dim)' }}>
+                              ※粗利データ未取得の企業は3指標(営業利益率35/ROE35/CF質30)で算出
+                            </td>
+                          </tr>
                         </tbody>
                       </table>
+                    </div>
+                  </div>
+                  {/* Momentum Score */}
+                  <div style={{ marginTop: 4 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Momentum スコア（100点）</div>
+                      <table style={{ fontSize: 11, minWidth: 'auto', borderCollapse: 'collapse' }}>
+                        <tbody>
+                          {[
+                            ['MA乖離率', '25点', '75日移動平均との乖離。+10%以上で満点'],
+                            ['GC/DC', '20点', '25日MA > 75日MA（ゴールデンクロス）で加点'],
+                            ['相対強度', '25点', '3ヶ月リターンがTOPIXを上回れば加点'],
+                            ['出来高', '15点', '直近20日平均 vs 60日平均。増加で加点'],
+                            ['ボラ調整', '15点', '年率ボラティリティ15%以下で満点'],
+                          ].map(([name, pts, desc]) => (
+                            <tr key={name} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td style={{ padding: '2px 8px 2px 0', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{name}</td>
+                              <td style={{ padding: '2px 8px 2px 0', color: 'var(--accent)', whiteSpace: 'nowrap' }}>{pts}</td>
+                              <td style={{ padding: '2px 0' }}>{desc}</td>
+                            </tr>
+                          ))}
+                          <tr>
+                            <td colSpan={3} style={{ padding: '2px 0', fontSize: 10, color: 'var(--text-dim)' }}>
+                              ※株価表示OFF時はMomentum=0点（V/Qのみで算出）
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  {/* Phase 3 ロードマップ */}
+                  <div style={{ marginTop: 8, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 6, border: '1px dashed var(--border)' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, fontSize: 11 }}>Coming Soon</div>
+                    <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 10 }}>
+                      <div>
+                        <span style={{ color: 'var(--text-dim)', fontWeight: 600 }}>D: Event</span>
+                        <span style={{ marginLeft: 6, color: 'var(--text-dim)' }}>自社株買い / 増配 / 業績修正 / インサイダー動向</span>
+                      </div>
+                      <div>
+                        <span style={{ color: 'var(--text-dim)', fontWeight: 600 }}>E: AI定性</span>
+                        <span style={{ marginLeft: 6, color: 'var(--text-dim)' }}>事業モート / 経営陣の質 / リスク深刻度 / ESG</span>
+                      </div>
                     </div>
                   </div>
                   <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-dim)' }}>
