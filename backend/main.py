@@ -493,109 +493,170 @@ def calc_momentum_score(
 # ════════════════════════════════════════════════════════════
 # Phase 3 スケルトン: Event Score (D層)
 # ════════════════════════════════════════════════════════════
-def calc_event_score(d: dict, events: list[dict] | None = None) -> tuple[float, dict]:
-    """Event スコアを計算 (0-100点)。IRイベント・適時開示の質を評価。
+def calc_event_score(d: dict, hist_financials: list[dict] | None = None) -> tuple[float, dict]:
+    """Event スコアを計算 (0-100点)。株主還元・業績トレンドを評価。
 
-    Phase 3 で実装予定。EDINET API / TDnet データが必要。
+    外部APIなし。DBの財務推移データ (過去3-5年) から算出。
+    hist_financials: [{fiscal_year, dividend, revenue, operating_income, ...}, ...]
+                     古い順 (昇順) で渡す
 
-    計画中の指標:
-      - 自社株買い発表 (25点): 直近6ヶ月の自社株買い → 株主還元姿勢
-      - 増配・配当政策 (25点): 増配発表/配当性向改善
-      - 業績修正インパクト (25点): 上方修正=加点, 下方修正=減点
-      - インサイダー動向 (25点): 役員買い=加点, 大量売り=減点
-
-    events: [{"type": "buyback", "date": "...", "amount": ...}, ...] のリスト
+    4指標:
+      - 増配トレンド (25点): 直近3年で連続増配 or 大幅増配
+      - 配当性向の健全さ (25点): 20-50% = 適正還元、0%=無配減点、80%超=過剰減点
+      - 連続増収増益 (25点): 直近3年で増収・増益の年が多いほど加点
+      - 業績加速 (25点): 直近の成長率が過去平均を上回っていれば加点
 
     Returns: (score, parts_dict)
     """
-    # TODO: Phase 3 実装時にアクティブ化
     parts: dict[str, float] = {}
 
-    if events is None or len(events) == 0:
+    if hist_financials is None or len(hist_financials) < 2:
         return 0.0, {"_status": "no_data"}
 
-    # ---- 実装テンプレート (コメントアウト) ----
-    # from datetime import datetime, timedelta
-    # now = datetime.now()
-    # recent = [e for e in events if (now - datetime.fromisoformat(e["date"])).days <= 180]
-    #
-    # # 自社株買い (25点)
-    # buybacks = [e for e in recent if e["type"] == "buyback"]
-    # if buybacks:
-    #     parts["buyback"] = 25.0
-    #
-    # # 増配 (25点)
-    # div_events = [e for e in recent if e["type"] in ("dividend_increase", "special_dividend")]
-    # if div_events:
-    #     parts["dividend"] = 25.0
-    #
-    # # 業績修正 (25点)
-    # revisions = [e for e in recent if e["type"] in ("upward_revision", "downward_revision")]
-    # for rev in revisions:
-    #     if rev["type"] == "upward_revision":
-    #         parts["revision"] = parts.get("revision", 0) + 12.5
-    #     else:
-    #         parts["revision"] = parts.get("revision", 0) - 12.5
-    # parts["revision"] = max(0, min(25, parts.get("revision", 0)))
-    #
-    # # インサイダー動向 (25点)
-    # insider = [e for e in recent if e["type"] in ("insider_buy", "insider_sell")]
-    # # ...
-    #
-    # score = sum(v for k, v in parts.items() if not k.startswith("_"))
+    recs = hist_financials  # 古い順
 
-    return 0.0, {"_status": "not_implemented"}
+    # ── 1) 増配トレンド (25点) ──
+    divs = [(r.get("fiscal_year"), r.get("dividend")) for r in recs if r.get("dividend") is not None]
+    if len(divs) >= 2:
+        increases = 0
+        for i in range(1, len(divs)):
+            if divs[i][1] > divs[i - 1][1]:
+                increases += 1
+        recent_n = min(len(divs) - 1, 3)  # 直近3年間
+        recent_increases = 0
+        for i in range(len(divs) - recent_n, len(divs)):
+            if divs[i][1] > divs[i - 1][1]:
+                recent_increases += 1
+        # 直近3年中3年連続増配=25点, 2年=17点, 1年=8点
+        s = min(25.0, 25.0 * recent_increases / max(1, recent_n))
+        parts["dividend_trend"] = round(s, 1)
+
+    # ── 2) 配当性向の健全さ (25点) ──
+    latest = recs[-1]
+    pr = latest.get("payout_ratio")
+    if pr is not None:
+        if 0.15 <= pr <= 0.50:
+            # 適正レンジ: 満点
+            s = 25.0
+        elif pr <= 0:
+            # 無配 or 赤字
+            s = 0.0
+        elif pr < 0.15:
+            # 配当少なすぎ (ケチ)
+            s = max(0.0, 25.0 * pr / 0.15)
+        elif pr <= 0.80:
+            # やや高め (50-80%)
+            s = max(0.0, 25.0 * (1.0 - (pr - 0.50) / 0.30))
+        else:
+            # 80%超: 過剰配当で持続性に疑問
+            s = 0.0
+        parts["payout_health"] = round(s, 1)
+
+    # ── 3) 連続増収増益 (25点) ──
+    recent = recs[-4:] if len(recs) >= 4 else recs  # 直近3-4年
+    rev_up = 0
+    oi_up = 0
+    checks = 0
+    for i in range(1, len(recent)):
+        r_prev = recent[i - 1].get("revenue")
+        r_curr = recent[i].get("revenue")
+        o_prev = recent[i - 1].get("operating_income")
+        o_curr = recent[i].get("operating_income")
+        if r_prev and r_curr and r_curr > r_prev:
+            rev_up += 1
+        if o_prev and o_curr and o_curr > o_prev:
+            oi_up += 1
+        checks += 1
+    if checks > 0:
+        # 増収+増益の比率 → 25点
+        combo = (rev_up + oi_up) / (checks * 2)
+        s = min(25.0, 25.0 * combo)
+        parts["growth_streak"] = round(s, 1)
+
+    # ── 4) 業績加速 (25点) ──
+    # 直近の成長率 vs 過去平均。加速していれば加点
+    rg = d.get("revenue_growth")
+    rcagr = d.get("revenue_cagr_3y")
+    if rg is not None and rcagr is not None:
+        if rcagr > 0:
+            accel = rg / rcagr  # 1.0超なら加速
+            s = max(0.0, min(25.0, 25.0 * min(2.0, accel) / 2.0))
+        elif rg > 0:
+            s = 20.0  # CAGRマイナスからプラス転換
+        else:
+            s = 0.0
+        parts["acceleration"] = round(s, 1)
+    elif rg is not None and rg > 0:
+        # CAGRなしだが直近プラス成長
+        parts["acceleration"] = 10.0
+
+    score = sum(v for k, v in parts.items() if not k.startswith("_"))
+    return round(min(100.0, score), 1), parts
 
 
 # ════════════════════════════════════════════════════════════
 # Phase 3 スケルトン: AI Qualitative Score (E層)
 # ════════════════════════════════════════════════════════════
-def calc_ai_qualitative_score(d: dict, text_data: dict | None = None) -> tuple[float, dict]:
-    """AI定性スコアを計算 (0-100点)。LLMを使った定性評価。
+def calc_ai_qualitative_score(d: dict, hist_financials: list[dict] | None = None) -> tuple[float, dict]:
+    """企業の質的評価スコア (0-100点)。財務安定性・信用力を数値で評価。
 
-    Phase 3 (後半) で実装予定。LLM API (Claude or GPT) が必要。
+    外部API/LLM不要。DBのcredit_score + 財務データから算出。
+    将来的にLLM分析 (有報テキスト) を追加予定。
 
-    計画中の指標:
-      - 事業モート評価 (30点): 有報の事業説明から参入障壁・競争優位性を評価
-      - 経営陣の質 (20点): 社長メッセージ・ガバナンス記述から評価
-      - リスク要因深刻度 (25点): リスク情報の深刻度を判定 (低リスク=高得点)
-      - ESG/サステナビリティ (25点): ESG開示の充実度
-
-    text_data: {
-        "business_description": "...",  # 有報の事業の内容
-        "risk_factors": "...",          # 事業等のリスク
-        "management_message": "...",    # 経営者メッセージ
-        "governance": "...",            # ガバナンス
-    }
+    4指標:
+      - 信用スコア (30点): EDINET DB の credit_score (0-100) を正規化
+      - 財務安定性 (25点): 自己資本比率の高さ
+      - 収益安定性 (25点): 過去の利益変動の小ささ (低ブレ=安定)
+      - 利益の質 (20点): 特別損益に依存しない経常的利益力
 
     Returns: (score, parts_dict)
     """
-    # TODO: Phase 3 後半で実装。LLM APIコスト要検討。
     parts: dict[str, float] = {}
 
-    if text_data is None:
-        return 0.0, {"_status": "no_data"}
+    # ── 1) 信用スコア (30点) ──
+    cs = d.get("credit_score")
+    if cs is not None:
+        # credit_score は 0-100。そのまま30点満点に正規化
+        s = max(0.0, min(30.0, 30.0 * cs / 100.0))
+        parts["credit"] = round(s, 1)
 
-    # ---- 実装テンプレート (コメントアウト) ----
-    # import anthropic  # or openai
-    #
-    # prompt = f"""以下の企業情報を読み、0-100点で評価してください。
-    # 事業内容: {text_data.get("business_description", "N/A")[:2000]}
-    # リスク: {text_data.get("risk_factors", "N/A")[:1000]}
-    # """
-    #
-    # # LLM呼び出し → JSONレスポンスをパース
-    # # response = client.messages.create(...)
-    # # parsed = json.loads(response.content[0].text)
-    #
-    # # parts["moat"] = parsed.get("moat_score", 0)
-    # # parts["management"] = parsed.get("management_score", 0)
-    # # parts["risk"] = parsed.get("risk_score", 0)
-    # # parts["esg"] = parsed.get("esg_score", 0)
-    #
-    # score = sum(v for k, v in parts.items() if not k.startswith("_"))
+    # ── 2) 財務安定性 (25点) ──
+    # 自己資本比率: 50%以上=満点, 20%以下=0点
+    eq = d.get("equity_ratio")
+    if eq is not None:
+        s = max(0.0, min(25.0, 25.0 * (eq - 0.20) / 0.30))
+        parts["financial_stability"] = round(s, 1)
 
-    return 0.0, {"_status": "not_implemented"}
+    # ── 3) 収益安定性 (25点) ──
+    # 過去の純利益の変動係数 (CV) が小さいほど安定
+    if hist_financials and len(hist_financials) >= 3:
+        ni_list = [r.get("net_income") for r in hist_financials if r.get("net_income") is not None and r.get("net_income") > 0]
+        if len(ni_list) >= 3:
+            mean_ni = sum(ni_list) / len(ni_list)
+            if mean_ni > 0:
+                var_ni = sum((x - mean_ni) ** 2 for x in ni_list) / len(ni_list)
+                cv = (var_ni ** 0.5) / mean_ni  # 変動係数
+                # CV 0.2以下=25点 (超安定), CV 1.0以上=0点 (不安定)
+                s = max(0.0, min(25.0, 25.0 * (1.0 - (cv - 0.2) / 0.8)))
+                parts["earnings_stability"] = round(s, 1)
+
+    # ── 4) 利益の質 (20点) ──
+    # 経常利益/純利益 比率: 特別損益に依存していない = 質が高い
+    oi = d.get("ordinary_income") or d.get("operating_income")
+    ni = d.get("net_income")
+    if oi is not None and ni is not None and ni > 0:
+        quality_ratio = oi / ni
+        if quality_ratio >= 0.8:
+            # 経常利益が純利益の80%以上 → 特別利益に非依存
+            s = min(20.0, 20.0)
+        elif quality_ratio >= 0.5:
+            s = max(0.0, 20.0 * (quality_ratio - 0.5) / 0.3)
+        else:
+            s = 0.0  # 特別利益頼み
+        parts["earnings_quality"] = round(s, 1)
+
+    score = sum(v for k, v in parts.items() if not k.startswith("_"))
+    return round(min(100.0, score), 1), parts
 
 
 # ════════════════════════════════════════════════════════════
@@ -610,7 +671,7 @@ SCORE_WEIGHTS = {
     "phase2": {"value": 0.4, "quality": 0.3, "momentum": 0.3},
     "phase3": {"value": 0.30, "quality": 0.25, "momentum": 0.20, "event": 0.15, "ai": 0.10},
 }
-CURRENT_PHASE = "phase2"  # Phase 2: Value 40% + Quality 30% + Momentum 30%
+CURRENT_PHASE = "phase3"  # Phase 3: V30 + Q25 + M20 + D15 + E10 (重み自動再配分)
 
 
 def calc_total_score(
@@ -620,16 +681,25 @@ def calc_total_score(
 ) -> float:
     """全レイヤーの加重平均で統合スコアを計算。
     phase が None なら CURRENT_PHASE を使う。
-    未実装レイヤー (score=0) は重み再配分しない（0として計算される）。
+    データなし (score=0) のレイヤーは重みを他レイヤーに再配分する。
+    → 株価OFF時でもON時と近いスコアになる。
     """
     ph = phase or CURRENT_PHASE
-    w = SCORE_WEIGHTS.get(ph, SCORE_WEIGHTS["phase1"])
-    total = (
-        value * w.get("value", 0)
-        + quality * w.get("quality", 0)
-        + momentum * w.get("momentum", 0)
-        + event * w.get("event", 0)
-        + ai * w.get("ai", 0)
+    w = dict(SCORE_WEIGHTS.get(ph, SCORE_WEIGHTS["phase1"]))
+
+    scores = {"value": value, "quality": quality, "momentum": momentum, "event": event, "ai": ai}
+
+    # データありレイヤーの重みを集計
+    active_weight = sum(w.get(k, 0) for k, v in scores.items() if v > 0 and w.get(k, 0) > 0)
+    if active_weight <= 0:
+        # 全部0ならValue/Qualityで計算
+        return round(value * 0.6 + quality * 0.4, 1)
+
+    # 重みを正規化 (データなしレイヤーの重みを再配分)
+    total = sum(
+        scores[k] * (w.get(k, 0) / active_weight)
+        for k in scores
+        if scores[k] > 0 and w.get(k, 0) > 0
     )
     return round(total, 1)
 
@@ -847,11 +917,16 @@ def get_company(edinet_code: str) -> dict:
             takehara = {"score": score, "parts": parts}
             q_score, q_parts = calc_quality_score(score_input)
             quality = {"score": q_score, "parts": q_parts}
-            # Phase 2/3 スコア (未実装 → 0点)
-            momentum = {"score": 0.0, "parts": {"_status": "not_implemented"}}
-            event = {"score": 0.0, "parts": {"_status": "not_implemented"}}
-            ai_qual = {"score": 0.0, "parts": {"_status": "not_implemented"}}
-            total_score = calc_total_score(score, q_score)
+            # Momentum (CompanyDetail では株価履歴未取得のため0)
+            momentum = {"score": 0.0, "parts": {"_status": "no_data"}}
+            # Event / AI スコア (財務推移から算出)
+            hist_asc = list(reversed(fins_list))  # 古い順に
+            score_input_with_credit = {**score_input, "credit_score": company_dict.get("credit_score")}
+            e_score, e_parts = calc_event_score(score_input_with_credit, hist_asc)
+            event = {"score": e_score, "parts": e_parts}
+            a_score, a_parts = calc_ai_qualitative_score(score_input_with_credit, hist_asc)
+            ai_qual = {"score": a_score, "parts": a_parts}
+            total_score = calc_total_score(score, q_score, 0.0, e_score, a_score)
 
     return {
         "company": company_dict,
@@ -1254,9 +1329,30 @@ def screener(
             params.extend([limit, offset])
             rows = conn.execute(base_query, params).fetchall()
 
+    # Event / AI スコア用: 各社の過去財務データを一括取得
+    edinet_codes = list({row_to_dict(r).get("edinet_code") for r in rows if row_to_dict(r).get("edinet_code")})
+    hist_map: dict[str, list[dict]] = {}  # edinet_code -> [{fiscal_year, dividend, ...}, ...]
+    if edinet_codes:
+        with get_db() as conn2:
+            for ec in edinet_codes:
+                hist_rows = conn2.execute(
+                    """SELECT fiscal_year, dividend, payout_ratio, revenue,
+                              operating_income, ordinary_income, net_income
+                       FROM financials WHERE edinet_code = ? ORDER BY fiscal_year ASC""",
+                    (ec,),
+                ).fetchall()
+                if hist_rows:
+                    hist_map[ec] = [
+                        {"fiscal_year": r[0], "dividend": r[1], "payout_ratio": r[2],
+                         "revenue": r[3], "operating_income": r[4], "ordinary_income": r[5],
+                         "net_income": r[6]}
+                        for r in hist_rows
+                    ]
+
     results = []
     for row in rows:
         d = row_to_dict(row)
+        ec = d.get("edinet_code")
         # Value スコア (竹原式)
         value_score, value_parts = calc_takehara_score(d)
         d["takehara_score"] = value_score
@@ -1265,19 +1361,20 @@ def screener(
         quality_score, quality_parts = calc_quality_score(d)
         d["quality_score"] = quality_score
         d["quality_parts"] = quality_parts
-        # Momentum スコア (Phase 2 — 未実装、データなしで0点)
+        # Momentum スコア (with_prices=true 時に再計算)
         momentum_score, momentum_parts = calc_momentum_score(d)
         d["momentum_score"] = momentum_score
         d["momentum_parts"] = momentum_parts
-        # Event スコア (Phase 3 — 未実装)
-        event_score, event_parts = calc_event_score(d)
+        # Event スコア (財務推移から算出)
+        hist = hist_map.get(ec)
+        event_score, event_parts = calc_event_score(d, hist)
         d["event_score"] = event_score
         d["event_parts"] = event_parts
-        # AI定性スコア (Phase 3 — 未実装)
-        ai_score, ai_parts = calc_ai_qualitative_score(d)
+        # AI定性スコア (信用力・安定性)
+        ai_score, ai_parts = calc_ai_qualitative_score(d, hist)
         d["ai_score"] = ai_score
         d["ai_parts"] = ai_parts
-        # 統合スコア (現在 Phase 1: Value 60% + Quality 40%)
+        # 統合スコア (Phase 3: V30 Q25 M20 D15 E10, 重み自動再配分)
         d["total_score"] = calc_total_score(value_score, quality_score, momentum_score, event_score, ai_score)
         d.update(calc_target_prices(d.get("eps"), d.get("bps")))
 

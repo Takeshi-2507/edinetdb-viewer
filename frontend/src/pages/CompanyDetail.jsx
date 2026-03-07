@@ -324,14 +324,17 @@ export default function CompanyDetail() {
                 M:{momentum.score}
               </span>
             )}
-            {/* Phase 3 スコア (未実装 → グレー表示) */}
-            {event && event.score != null && (
-              <span className="badge" style={{ opacity: 0.4 }} title="Phase 3 で実装予定">
+            {/* Event スコア (Phase 3) */}
+            {event && event.score != null && event.score > 0 && (
+              <span className={`badge ${event.score >= 60 ? 'badge-green' : event.score >= 40 ? 'badge-blue' : event.score >= 20 ? 'badge-yellow' : 'badge-red'}`}
+                    title={Object.entries(event.parts || {}).filter(([k]) => !k.startsWith('_')).map(([k, v]) => `${k}: ${v}`).join(', ')}>
                 D:{event.score}
               </span>
             )}
-            {ai_qualitative && ai_qualitative.score != null && (
-              <span className="badge" style={{ opacity: 0.4 }} title="Phase 3 で実装予定">
+            {/* AI定性 スコア (Phase 3) */}
+            {ai_qualitative && ai_qualitative.score != null && ai_qualitative.score > 0 && (
+              <span className={`badge ${ai_qualitative.score >= 60 ? 'badge-green' : ai_qualitative.score >= 40 ? 'badge-blue' : ai_qualitative.score >= 20 ? 'badge-yellow' : 'badge-red'}`}
+                    title={Object.entries(ai_qualitative.parts || {}).filter(([k]) => !k.startsWith('_')).map(([k, v]) => `${k}: ${v}`).join(', ')}>
                 E:{ai_qualitative.score}
               </span>
             )}

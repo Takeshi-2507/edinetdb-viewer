@@ -42,11 +42,11 @@ function TotalScoreCell({ row }) {
   const value = row.takehara_score
   const quality = row.quality_score
   const momentum = row.momentum_score
+  const event = row.event_score
+  const ai = row.ai_score
   if (total == null) return <span style={{ color: 'var(--text-dim)' }}>-</span>
   const color = total >= 70 ? 'var(--green)' : total >= 50 ? 'var(--yellow)' : total >= 30 ? 'var(--accent)' : 'var(--red)'
-  const vColor = value >= 70 ? 'var(--green)' : value >= 50 ? 'var(--yellow)' : 'var(--text-dim)'
-  const qColor = quality >= 70 ? 'var(--green)' : quality >= 50 ? 'var(--yellow)' : 'var(--text-dim)'
-  const mColor = momentum > 0 ? (momentum >= 60 ? 'var(--green)' : momentum >= 40 ? 'var(--yellow)' : 'var(--text-dim)') : 'var(--text-dim)'
+  const sc = (v, hi = 70, lo = 50) => v > 0 ? (v >= hi ? 'var(--green)' : v >= lo ? 'var(--yellow)' : 'var(--text-dim)') : 'var(--text-dim)'
   const ratio = Math.min(100, (total / 100) * 100)
   return (
     <div style={{ minWidth: 90 }}>
@@ -56,10 +56,12 @@ function TotalScoreCell({ row }) {
         </div>
         <span style={{ fontWeight: 700, fontSize: 13, color, minWidth: 28 }}>{total}</span>
       </div>
-      <div style={{ display: 'flex', gap: 6, marginTop: 2, fontSize: 10, lineHeight: 1.2 }}>
-        <span style={{ color: vColor }}>V:{value ?? '-'}</span>
-        <span style={{ color: qColor }}>Q:{quality ?? '-'}</span>
-        {momentum > 0 && <span style={{ color: mColor }}>M:{momentum}</span>}
+      <div style={{ display: 'flex', gap: 5, marginTop: 2, fontSize: 10, lineHeight: 1.2, flexWrap: 'wrap' }}>
+        <span style={{ color: sc(value) }}>V:{value ?? '-'}</span>
+        <span style={{ color: sc(quality) }}>Q:{quality ?? '-'}</span>
+        {momentum > 0 && <span style={{ color: sc(momentum, 60, 40) }}>M:{momentum}</span>}
+        {event > 0 && <span style={{ color: sc(event, 60, 40) }}>D:{event}</span>}
+        {ai > 0 && <span style={{ color: sc(ai, 60, 40) }}>E:{ai}</span>}
       </div>
     </div>
   )
@@ -128,7 +130,7 @@ const SORTABLE_COLUMNS = [
   { key: 'company_name', label: '銘柄', align: 'left', defaultDir: 'asc' },
   { key: 'industry',     label: '業種', align: 'left', defaultDir: 'asc' },
   { key: 'score',        label: '総合', align: 'right', defaultDir: 'desc',
-    tooltip: '総合 = Value×40% + Quality×30% + Momentum×30%\nValue(竹原式): PER+PBR+ROE+営業利益率+現金+FCF\nQuality: 粗利率+営業利益率+ROE+CF質\nMomentum: MA乖離率+GC/DC+RS+出来高+ボラ\n※株価OFF時はMomentum=0 (V/Qのみ)' },
+    tooltip: '総合 = V×30% + Q×25% + M×20% + D×15% + E×10%\nV(竹原式): PER+PBR+ROE+営業利益率+現金+FCF\nQ(Quality): 粗利率+営業利益率+ROE+CF質\nM(Momentum): MA乖離率+GC/DC+RS+出来高+ボラ\nD(Event): 増配+配当性向+増収増益+加速\nE(AI定性): 信用+財務安定+収益安定+利益の質\n※データなし層の重みは自動再配分' },
   { key: 'per',              label: 'PER',      align: 'right', defaultDir: 'asc' },
   { key: 'pbr',              label: 'PBR',      align: 'right', defaultDir: 'asc' },
   { key: 'roe',              label: 'ROE',      align: 'right', defaultDir: 'desc' },
@@ -731,8 +733,8 @@ export default function Screener() {
               {showScoreHelp && (
                 <div style={{ paddingBottom: 10, fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.8 }}>
                   <div style={{ marginBottom: 8, padding: '4px 8px', background: 'var(--surface2)', borderRadius: 4 }}>
-                    <strong style={{ color: 'var(--text)' }}>総合スコア = Value × 40% + Quality × 30% + Momentum × 30%</strong>
-                    <span style={{ marginLeft: 8, fontSize: 10 }}>（V: 割安度, Q: ビジネスの質, M: 株価の勢い）Phase 2</span>
+                    <strong style={{ color: 'var(--text)' }}>総合スコア = V×30% + Q×25% + M×20% + D×15% + E×10%</strong>
+                    <span style={{ marginLeft: 8, fontSize: 10 }}>（V:割安度 Q:質 M:勢い D:イベント E:定性）Phase 3 ※データなし層は自動再配分</span>
                   </div>
                   <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                     <div>
@@ -814,18 +816,55 @@ export default function Screener() {
                       </table>
                     </div>
                   </div>
-                  {/* Phase 3 ロードマップ */}
-                  <div style={{ marginTop: 8, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 6, border: '1px dashed var(--border)' }}>
-                    <div style={{ fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4, fontSize: 11 }}>Coming Soon</div>
-                    <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 10 }}>
-                      <div>
-                        <span style={{ color: 'var(--text-dim)', fontWeight: 600 }}>D: Event</span>
-                        <span style={{ marginLeft: 6, color: 'var(--text-dim)' }}>自社株買い / 増配 / 業績修正 / インサイダー動向</span>
-                      </div>
-                      <div>
-                        <span style={{ color: 'var(--text-dim)', fontWeight: 600 }}>E: AI定性</span>
-                        <span style={{ marginLeft: 6, color: 'var(--text-dim)' }}>事業モート / 経営陣の質 / リスク深刻度 / ESG</span>
-                      </div>
+                  {/* Event / AI Qualitative Score */}
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 4 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Event スコア（100点）</div>
+                      <table style={{ fontSize: 11, minWidth: 'auto', borderCollapse: 'collapse' }}>
+                        <tbody>
+                          {[
+                            ['増配トレンド', '25点', '直近3年で連続増配で加点'],
+                            ['配当性向', '25点', '20-50%=適正。無配・80%超=減点'],
+                            ['増収増益', '25点', '直近3年の増収・増益の連続性'],
+                            ['業績加速', '25点', '直近成長率 > 過去平均で加点'],
+                          ].map(([name, pts, desc]) => (
+                            <tr key={name} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td style={{ padding: '2px 8px 2px 0', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{name}</td>
+                              <td style={{ padding: '2px 8px 2px 0', color: 'var(--accent)', whiteSpace: 'nowrap' }}>{pts}</td>
+                              <td style={{ padding: '2px 0' }}>{desc}</td>
+                            </tr>
+                          ))}
+                          <tr>
+                            <td colSpan={3} style={{ padding: '2px 0', fontSize: 10, color: 'var(--text-dim)' }}>
+                              ※財務履歴2年未満の企業はEvent=0（重み再配分）
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>AI定性 スコア（100点）</div>
+                      <table style={{ fontSize: 11, minWidth: 'auto', borderCollapse: 'collapse' }}>
+                        <tbody>
+                          {[
+                            ['信用スコア', '30点', 'EDINET信用スコアを正規化'],
+                            ['財務安定性', '25点', '自己資本比率50%以上で満点'],
+                            ['収益安定性', '25点', '純利益の変動係数が低いほど加点'],
+                            ['利益の質', '20点', '経常利益/純利益≥80%で満点'],
+                          ].map(([name, pts, desc]) => (
+                            <tr key={name} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td style={{ padding: '2px 8px 2px 0', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{name}</td>
+                              <td style={{ padding: '2px 8px 2px 0', color: 'var(--accent)', whiteSpace: 'nowrap' }}>{pts}</td>
+                              <td style={{ padding: '2px 0' }}>{desc}</td>
+                            </tr>
+                          ))}
+                          <tr>
+                            <td colSpan={3} style={{ padding: '2px 0', fontSize: 10, color: 'var(--text-dim)' }}>
+                              ※信用スコア未取得の企業は残り3指標で算出
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                   <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-dim)' }}>
