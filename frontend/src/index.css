@@ -205,6 +205,10 @@ tr:hover td { background: rgba(255, 106, 0, 0.03); }
   display: none;
 }
 
+.bottom-tabbar {
+  display: none;
+}
+
 
 /* ==========================================================
    App Layout — Mobile (max-width: 768px)
@@ -222,12 +226,13 @@ tr:hover td { background: rgba(255, 106, 0, 0.03); }
     flex-direction: column;
   }
 
+  /* ---- Minimal topbar (title + alert) ---- */
   .mobile-topbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: var(--topbar-h);
-    padding: 0 12px;
+    height: 40px;
+    padding: 0 14px;
     background: rgba(15, 15, 22, 0.95);
     backdrop-filter: blur(16px) saturate(180%);
     border-bottom: 1px solid rgba(255, 106, 0, 0.15);
@@ -237,21 +242,9 @@ tr:hover td { background: rgba(255, 106, 0, 0.03); }
     flex-shrink: 0;
   }
 
-  .hamburger-btn {
-    background: none !important;
-    border: none !important;
-    padding: 6px !important;
-    color: var(--text);
-    text-shadow: none;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .hamburger-btn:hover { opacity: 0.8; box-shadow: none; }
-
   .topbar-title {
     font-weight: 800;
-    font-size: 15px;
+    font-size: 14px;
     color: var(--accent);
     letter-spacing: .06em;
   }
@@ -284,17 +277,70 @@ tr:hover td { background: rgba(255, 106, 0, 0.03); }
     box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
   }
 
+  /* ---- Bottom tab bar ---- */
+  .bottom-tabbar {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    background: rgba(15, 15, 22, 0.97);
+    backdrop-filter: blur(16px) saturate(180%);
+    border-top: 1px solid var(--border);
+    z-index: 800;
+    justify-content: space-around;
+    align-items: stretch;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .bottom-tabbar a,
+  .bottom-tabbar button {
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    flex: 1;
+    text-decoration: none;
+    color: var(--text-dim);
+    font-size: 10px !important;
+    font-weight: 500;
+    background: none !important;
+    border: none !important;
+    cursor: pointer;
+    transition: color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    padding: 4px 0 !important;
+    text-shadow: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  .bottom-tabbar a.active,
+  .bottom-tabbar button.active {
+    color: var(--accent);
+  }
+
+  .bottom-tabbar a:hover,
+  .bottom-tabbar button:hover {
+    opacity: 1;
+    box-shadow: none !important;
+  }
+
+  /* ---- Sidebar as drawer (from "More" tab) ---- */
   .sidebar {
     position: fixed;
-    top: var(--topbar-h);
+    top: 40px;
     left: 0;
-    bottom: 0;
+    bottom: 56px;
     width: 260px;
     transform: translateX(-100%);
     transition: transform 0.25s ease;
     z-index: 900;
     box-shadow: none;
     overflow-y: auto;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .sidebar.sidebar-open {
     transform: translateX(0);
@@ -304,15 +350,17 @@ tr:hover td { background: rgba(255, 106, 0, 0.03); }
   .drawer-overlay {
     display: block;
     position: fixed;
-    top: var(--topbar-h);
-    left: 0; right: 0; bottom: 0;
+    top: 40px;
+    left: 0; right: 0;
+    bottom: 56px;
     background: rgba(0, 0, 0, 0.5);
     z-index: 850;
     animation: fadeIn 0.2s ease;
   }
 
+  /* ---- Main content with padding for bottom bar ---- */
   .main-content {
-    padding: 12px 10px;
+    padding: 12px 10px 72px;
     flex: 1;
   }
 
@@ -386,6 +434,9 @@ html.theme-local ::selection {
 @media (max-width: 768px) {
   html.theme-local .mobile-topbar {
     border-bottom: 1px solid rgba(0, 212, 255, 0.15);
+  }
+  html.theme-local .bottom-tabbar {
+    border-top: 1px solid rgba(0, 212, 255, 0.15);
   }
 }
 

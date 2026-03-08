@@ -289,10 +289,10 @@ export default function CompanyDetail() {
         </Link>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700 }}>{c.company_name}</h1>
-          <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: isMobile ? 8 : 16, marginBottom: isMobile ? 16 : 24, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700 }}>{c.company_name}</h1>
+          <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {c.industry && <span className="badge badge-gray">{c.industry}</span>}
             {c.accounting_std && <span className="badge badge-gray">{c.accounting_std}</span>}
             {c.credit_rating && (

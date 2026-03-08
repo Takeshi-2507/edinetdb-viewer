@@ -81,18 +81,18 @@ export default function Companies() {
               {data?.total?.toLocaleString()}社 見つかりました
             </div>
             <div style={{ overflowX: 'auto' }}>
-              <table>
+              <table style={{ fontSize: isMobile ? 12 : undefined }}>
                 <thead>
                   <tr>
                     <th>企業名</th>
-                    <th>証券コード</th>
-                    <th>業種</th>
-                    <th>会計基準</th>
-                    <th>信用スコア</th>
+                    {!isMobile && <th>証券コード</th>}
+                    {!isMobile && <th>業種</th>}
+                    {!isMobile && <th>会計基準</th>}
+                    <th>信用</th>
                     <th style={{ cursor: 'pointer' }} onClick={() => { setSortBy(s => s === 'takehara' ? 'credit_score' : 'takehara'); setPage(1) }}>
                       竹原式 {sortBy === 'takehara' ? '▼' : ''}
                     </th>
-                    <th>年度数</th>
+                    {!isMobile && <th>年度数</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -102,22 +102,24 @@ export default function Companies() {
                         <Link to={`/companies/${c.edinet_code}`} style={{ fontWeight: 500 }}>
                           {c.company_name}
                         </Link>
-                        <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{c.edinet_code}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                          {c.securities_code ? c.securities_code.slice(0, 4) : ''}{isMobile && c.industry ? ` / ${c.industry}` : ` ${c.edinet_code}`}
+                        </div>
                       </td>
-                      <td className="number">{c.securities_code ? c.securities_code.slice(0, 4) : '–'}</td>
-                      <td style={{ fontSize: 12 }}>{c.industry || '–'}</td>
-                      <td style={{ fontSize: 12 }}>{c.accounting_std || '–'}</td>
+                      {!isMobile && <td className="number">{c.securities_code ? c.securities_code.slice(0, 4) : '–'}</td>}
+                      {!isMobile && <td style={{ fontSize: 12 }}>{c.industry || '–'}</td>}
+                      {!isMobile && <td style={{ fontSize: 12 }}>{c.accounting_std || '–'}</td>}
                       <td>
                         {c.credit_score != null && (
                           <span className={`badge ${c.credit_score >= 70 ? 'badge-green' : c.credit_score >= 40 ? 'badge-blue' : 'badge-red'}`}>
-                            {c.credit_score} ({c.credit_rating || ''})
+                            {c.credit_score}
                           </span>
                         )}
                       </td>
                       <td className="number">
                         <ScoreBadge score={c.takehara_score} />
                       </td>
-                      <td className="number">{c.fiscal_years ?? '–'}</td>
+                      {!isMobile && <td className="number">{c.fiscal_years ?? '–'}</td>}
                     </tr>
                   ))}
                 </tbody>

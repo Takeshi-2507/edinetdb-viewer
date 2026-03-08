@@ -615,7 +615,7 @@ export default function Screener() {
           }}>
             リセット
           </button>
-          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, marginLeft: 16 }}>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, marginLeft: isMobile ? 0 : 16, width: isMobile ? '100%' : 'auto' }}>
             <input type="checkbox" checked={showPrices}
               onChange={e => {
                 const v = e.target.checked
@@ -630,7 +630,7 @@ export default function Screener() {
                   doApply(null, null, v)
                 }
               }} />
-            <span style={{ fontWeight: 500 }}>株価・売り時目安を表示</span>
+            <span style={{ fontWeight: 500 }}>{isMobile ? '株価表示' : '株価・売り時目安を表示'}</span>
           </label>
         </div>
       </div>
@@ -673,9 +673,11 @@ export default function Screener() {
         }}>
           + ソート設定
         </button>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 8 }}>
-          Shift+クリックでソート追加
-        </span>
+        {!isMobile && (
+          <span style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 8 }}>
+            Shift+クリックでソート追加
+          </span>
+        )}
       </div>
 
       {showSortDialog && (

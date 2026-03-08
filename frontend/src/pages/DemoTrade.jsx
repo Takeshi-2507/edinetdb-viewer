@@ -14,10 +14,10 @@ function fmtPnl(v) {
   return `${n >= 0 ? '+' : ''}¥${n.toLocaleString('ja-JP')}`
 }
 
-/** SVGラインチャート */
+/** SVGラインチャート（レスポンシブ対応） */
 function MiniChart({ history, width = 320, height = 120 }) {
   if (!history || history.length < 2) {
-    return <div style={{ width, height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 11 }}>データなし</div>
+    return <div style={{ width: '100%', height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 11 }}>データなし</div>
   }
   const closes = history.map(h => h.close)
   const min = Math.min(...closes) * 0.998
@@ -35,9 +35,9 @@ function MiniChart({ history, width = 320, height = 120 }) {
   const color = last >= first ? 'var(--green)' : 'var(--red)'
 
   return (
-    <svg width={width} height={height} style={{ display: 'block' }}>
-      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" />
-      {/* 最新価格の点 */}
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
+         style={{ display: 'block', width: '100%', height }}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
       <circle cx={width} cy={height - ((last - min) / range) * (height - 8) - 4} r="3" fill={color} />
     </svg>
   )
@@ -299,7 +299,7 @@ export default function DemoTrade() {
                 </div>
 
                 {/* チャート */}
-                <MiniChart history={chartData} width={isMobile ? 320 : 500} height={isMobile ? 100 : 140} />
+                <MiniChart history={chartData} height={isMobile ? 100 : 140} />
               </>
             )}
           </div>

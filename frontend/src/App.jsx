@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Bell, Menu, X } from 'lucide-react'
 import { api } from './api'
 import { useIsLocal } from './hooks/useIsLocal'
+import { useIsMobile } from './hooks/useIsMobile'
 import Dashboard from './pages/Dashboard'
 import Companies from './pages/Companies'
 import CompanyDetail from './pages/CompanyDetail'
@@ -18,6 +19,14 @@ const NAV = [
   { to: '/demo-trade',  icon: LineChart,       label: 'デモトレード' },
   { to: '/companies',   icon: Building2,       label: '企業一覧' },
   { to: '/rankings',    icon: TrendingUp,      label: 'ランキング' },
+]
+
+// モバイル用ボトムタブ（主要4画面 + もっと）
+const BOTTOM_TABS = [
+  { to: '/',            icon: LayoutDashboard, label: 'ホーム' },
+  { to: '/screener',    icon: Filter,          label: '銘柄' },
+  { to: '/us-screener', icon: Globe,           label: '米国株' },
+  { to: '/demo-trade',  icon: LineChart,       label: 'トレード' },
 ]
 
 /** アラートパネル */
@@ -136,6 +145,7 @@ function AlertPanel({ alerts, checkedAt, onClose }) {
 
 export default function App() {
   const isLocal = useIsLocal()
+  const isMobile = useIsMobile()
   const [menuOpen, setMenuOpen] = useState(false)
   const [alerts, setAlerts] = useState(null)
   const [checkedAt, setCheckedAt] = useState(null)
@@ -202,13 +212,6 @@ export default function App() {
 
       {/* ===== モバイル用トップバー (CSSで表示制御) ===== */}
       <header className="mobile-topbar">
-        <button
-          className="hamburger-btn"
-          onClick={() => setMenuOpen(v => !v)}
-          aria-label="メニュー"
-        >
-          {menuOpen ? <X size={22} /> : <Menu size={22} />}
-        </button>
         <div className="topbar-title">EDINET DB</div>
         <button
           className="topbar-alert-btn"
@@ -321,6 +324,23 @@ export default function App() {
           <Route path="/rankings"      element={<Rankings />} />
         </Routes>
       </main>
+
+      {/* ===== モバイル用ボトムタブバー (CSSで表示制御) ===== */}
+      <nav className="bottom-tabbar">
+        {BOTTOM_TABS.map(({ to, icon: Icon, label }) => (
+          <NavLink key={to} to={to} end={to === '/'}>
+            <Icon size={20} />
+            <span>{label}</span>
+          </NavLink>
+        ))}
+        <button
+          className={menuOpen || ['/companies', '/rankings'].some(p => location.pathname.startsWith(p)) ? 'active' : ''}
+          onClick={() => setMenuOpen(v => !v)}
+        >
+          {menuOpen ? <X size={20} /> : <Menu size={20} />}
+          <span>もっと</span>
+        </button>
+      </nav>
 
       {/* ===== アラートパネル ===== */}
       {showAlerts && (

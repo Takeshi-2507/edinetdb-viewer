@@ -107,7 +107,7 @@ def main():
     print(f"Coverage: {gp_count}/{all_count} records ({gp_count / all_count * 100:.1f}%)")
     print(f"Still NULL (latest year): {still_null} companies")
     if rate_limited:
-        print(f"Rate limited — run again later to continue.")
+        print("Rate limited -- run again later to continue.")
 
     conn.close()
 
