@@ -12,7 +12,7 @@ from pathlib import Path
 from time import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import os
@@ -1704,18 +1704,92 @@ def sync_log(limit: int = Query(10, ge=1, le=50)) -> list[dict]:
     return [row_to_dict(r) for r in rows]
 
 
-# --------------- デモトレード API ---------------
+# --------------- 認証 API ---------------
 
 from pydantic import BaseModel
+import jwt as pyjwt
+
+_JWT_SECRET = os.environ.get("JWT_SECRET", "fallback_secret_change_me")
+_JWT_ALGORITHM = "HS256"
+_JWT_EXPIRE_DAYS = 7
+
+
+def _load_users() -> dict[str, str]:
+    """envから固定ユーザーを読み込む (user_id -> password)"""
+    users = {}
+    for i in range(1, 5):
+        uid = os.environ.get(f"USER_{i}_ID")
+        pw = os.environ.get(f"USER_{i}_PW")
+        if uid and pw:
+            users[uid] = pw
+    return users
+
+
+def _create_token(user_id: str) -> str:
+    from datetime import datetime, timezone, timedelta
+    payload = {
+        "sub": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=_JWT_EXPIRE_DAYS),
+    }
+    return pyjwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+
+
+def _get_current_user(request: Request) -> str | None:
+    """Authorizationヘッダーからユーザーを取得。無効なら None"""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[7:]
+    try:
+        payload = pyjwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+        return payload.get("sub")
+    except pyjwt.ExpiredSignatureError:
+        return None
+    except pyjwt.InvalidTokenError:
+        return None
+
+
+def _require_user(request: Request) -> str:
+    """認証必須のエンドポイント用。未認証なら 401"""
+    user = _get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="認証が必要です")
+    return user
+
+
+class LoginRequest(BaseModel):
+    user_id: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest) -> dict:
+    users = _load_users()
+    if req.user_id not in users or users[req.user_id] != req.password:
+        raise HTTPException(status_code=401, detail="IDまたはパスワードが違います")
+    token = _create_token(req.user_id)
+    return {"token": token, "user_id": req.user_id}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict:
+    user = _get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="認証が必要です")
+    return {"user_id": user}
+
+
+# --------------- デモトレード API ---------------
 
 
 def _ensure_demo_trades_table():
-    """demo_trades テーブルを device_id 付きで確保"""
+    """demo_trades テーブルを user_id 付きで確保"""
     with get_db(readonly=False) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS demo_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 device_id TEXT DEFAULT '',
+                user_id TEXT DEFAULT '',
                 securities_code TEXT NOT NULL,
                 company_name TEXT,
                 trade_type TEXT NOT NULL,
@@ -1726,10 +1800,11 @@ def _ensure_demo_trades_table():
                 created_at TEXT
             )
         """)
-        # 既存テーブルに device_id がない場合は追加
         cols = [c[1] for c in conn.execute("PRAGMA table_info(demo_trades)").fetchall()]
         if "device_id" not in cols:
             conn.execute("ALTER TABLE demo_trades ADD COLUMN device_id TEXT DEFAULT ''")
+        if "user_id" not in cols:
+            conn.execute("ALTER TABLE demo_trades ADD COLUMN user_id TEXT DEFAULT ''")
         conn.commit()
 
 
@@ -1746,6 +1821,8 @@ def _ensure_indexes():
               ON ratios(edinet_code, fiscal_year);
             CREATE INDEX IF NOT EXISTS idx_demo_trades_device
               ON demo_trades(device_id);
+            CREATE INDEX IF NOT EXISTS idx_demo_trades_user
+              ON demo_trades(user_id);
             CREATE INDEX IF NOT EXISTS idx_companies_credit_score
               ON companies(credit_score DESC, company_name);
             CREATE INDEX IF NOT EXISTS idx_companies_securities_code
@@ -1768,31 +1845,31 @@ class TradeRequest(BaseModel):
     price: float
     quantity: int
     memo: str | None = None
-    device_id: str | None = None
 
 
 @app.get("/api/demo-trades")
-def list_trades(device_id: str = Query("", description="端末ID")) -> list[dict]:
-    """デモトレード一覧（端末ごと）"""
+def list_trades(request: Request) -> list[dict]:
+    """デモトレード一覧（ユーザーごと）"""
+    user_id = _require_user(request)
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM demo_trades WHERE device_id = ? ORDER BY trade_date DESC, id DESC",
-            (device_id,),
+            "SELECT * FROM demo_trades WHERE user_id = ? ORDER BY trade_date DESC, id DESC",
+            (user_id,),
         ).fetchall()
     return [row_to_dict(r) for r in rows]
 
 
 @app.post("/api/demo-trades")
-def create_trade(req: TradeRequest) -> dict:
+def create_trade(req: TradeRequest, request: Request) -> dict:
     """デモトレード登録"""
     from datetime import datetime, timezone
-    dev_id = req.device_id or ""
+    user_id = _require_user(request)
     with get_db(readonly=False) as conn:
         conn.execute(
             """INSERT INTO demo_trades
-               (device_id, securities_code, company_name, trade_type, trade_date, price, quantity, memo, created_at)
+               (user_id, securities_code, company_name, trade_type, trade_date, price, quantity, memo, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (dev_id, req.securities_code, req.company_name, req.trade_type,
+            (user_id, req.securities_code, req.company_name, req.trade_type,
              req.trade_date, req.price, req.quantity, req.memo,
              datetime.now(timezone.utc).isoformat()),
         )
@@ -1801,21 +1878,23 @@ def create_trade(req: TradeRequest) -> dict:
 
 
 @app.delete("/api/demo-trades/{trade_id}")
-def delete_trade(trade_id: int, device_id: str = Query("", description="端末ID")) -> dict:
-    """デモトレード削除（端末IDチェック）"""
+def delete_trade(trade_id: int, request: Request) -> dict:
+    """デモトレード削除（ユーザーIDチェック）"""
+    user_id = _require_user(request)
     with get_db(readonly=False) as conn:
-        conn.execute("DELETE FROM demo_trades WHERE id = ? AND device_id = ?", (trade_id, device_id))
+        conn.execute("DELETE FROM demo_trades WHERE id = ? AND user_id = ?", (trade_id, user_id))
         conn.commit()
     return {"status": "ok"}
 
 
 @app.get("/api/demo-portfolio")
-def demo_portfolio(device_id: str = Query("", description="端末ID")) -> dict:
-    """デモポートフォリオ（現在の保有状況と損益 - 端末ごと）"""
+def demo_portfolio(request: Request) -> dict:
+    """デモポートフォリオ（現在の保有状況と損益 - ユーザーごと）"""
+    user_id = _require_user(request)
     with get_db() as conn:
         trades = conn.execute(
-            "SELECT * FROM demo_trades WHERE device_id = ? ORDER BY trade_date ASC, id ASC",
-            (device_id,),
+            "SELECT * FROM demo_trades WHERE user_id = ? ORDER BY trade_date ASC, id ASC",
+            (user_id,),
         ).fetchall()
 
     # 銘柄ごとに集計
@@ -1959,15 +2038,16 @@ def company_search(q: str = Query(..., min_length=1)) -> list[dict]:
 # --------------- 売り時アラート API ---------------
 
 @app.get("/api/alerts")
-def get_alerts(device_id: str = Query("", description="端末ID")) -> dict:
-    """保有銘柄の売り時アラートを生成（端末ごと）"""
+def get_alerts(request: Request) -> dict:
+    """保有銘柄の売り時アラートを生成（ユーザーごと）"""
     from datetime import datetime, timezone
+    user_id = _require_user(request)
 
     with get_db() as conn:
         # デモトレード保有数量を集計
         trades = conn.execute(
-            "SELECT * FROM demo_trades WHERE device_id = ? ORDER BY trade_date ASC, id ASC",
-            (device_id,),
+            "SELECT * FROM demo_trades WHERE user_id = ? ORDER BY trade_date ASC, id ASC",
+            (user_id,),
         ).fetchall()
 
     holdings: dict[str, dict] = {}

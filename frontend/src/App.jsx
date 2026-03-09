@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Bell, Menu, X } from 'lucide-react'
-import { api } from './api'
+import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
+import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Bell, Menu, X, LogOut } from 'lucide-react'
+import { api, getToken, clearToken } from './api'
 import { useIsLocal } from './hooks/useIsLocal'
 import { useIsMobile } from './hooks/useIsMobile'
+import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Companies from './pages/Companies'
 import CompanyDetail from './pages/CompanyDetail'
@@ -153,6 +154,27 @@ export default function App() {
   const [dismissed, setDismissed] = useState(new Set())
   const location = useLocation()
 
+  // 認証状態
+  const [user, setUser] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
+  useEffect(() => {
+    if (!getToken()) {
+      setAuthChecked(true)
+      return
+    }
+    api.me()
+      .then(data => setUser(data.user_id))
+      .catch(() => { clearToken(); setUser(null) })
+      .finally(() => setAuthChecked(true))
+  }, [])
+
+  function handleLogout() {
+    clearToken()
+    setUser(null)
+    setAlerts(null)
+  }
+
   // ローカル版テーマクラスを <html> に適用
   useEffect(() => {
     if (isLocal) {
@@ -168,20 +190,35 @@ export default function App() {
   }, [location.pathname])
 
   const fetchAlerts = useCallback(() => {
+    if (!user) return
     api.alerts()
       .then(data => {
         setAlerts(data.alerts || [])
         setCheckedAt(data.checked_at)
       })
       .catch(() => {})
-  }, [])
+  }, [user])
 
   // 初回 + 5分間隔でポーリング
   useEffect(() => {
+    if (!user) return
     fetchAlerts()
     const id = setInterval(fetchAlerts, 5 * 60 * 1000)
     return () => clearInterval(id)
-  }, [fetchAlerts])
+  }, [fetchAlerts, user])
+
+  // 認証チェック中はローディング
+  if (!authChecked) return null
+
+  // 未認証: ログイン画面 or /login ルート
+  if (!user) {
+    return (
+      <Routes>
+        <Route path="/login" element={<Login onLogin={setUser} />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    )
+  }
 
   const activeAlerts = alerts?.filter(a => !dismissed.has(a.securities_code)) || []
   const alertCount = activeAlerts.length
@@ -305,10 +342,22 @@ export default function App() {
         </div>
 
         <div style={{
-          padding: '12px 16px', borderTop: '1px solid var(--border)',
-          fontSize: 10, color: 'var(--text-dim)', letterSpacing: '.03em',
+          padding: '10px 12px', borderTop: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         }}>
-          データソース: EDINET DB
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{user}</span>
+          <button
+            onClick={handleLogout}
+            title="ログアウト"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '4px 8px', borderRadius: 6, cursor: 'pointer',
+              background: 'transparent', border: '1px solid var(--border)',
+              color: 'var(--text-dim)', fontSize: 10,
+            }}
+          >
+            <LogOut size={12} />
+          </button>
         </div>
       </nav>
 

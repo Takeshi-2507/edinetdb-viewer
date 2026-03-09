@@ -1,24 +1,35 @@
 const BASE = '/api'
+const TOKEN_KEY = 'edinet_auth_token'
 
-// ---------- Device ID (端末固有識別子) ----------
-function getDeviceId() {
-  const KEY = 'edinet_device_id'
-  let id = localStorage.getItem(KEY)
-  if (!id) {
-    id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    localStorage.setItem(KEY, id)
-  }
-  return id
+// ---------- Auth helpers ----------
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY)
 }
 
-export const deviceId = getDeviceId()
+export function setToken(token) {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
 
 // ---------- HTTP helpers ----------
+
+function authHeaders() {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 async function get(path, params = {}) {
   const url = new URL(BASE + path, location.origin)
   Object.entries(params).forEach(([k, v]) => v != null && url.searchParams.set(k, v))
-  const res = await fetch(url)
+  const res = await fetch(url, { headers: authHeaders() })
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/login'
+    throw new Error('認証が必要です')
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || res.statusText)
@@ -30,9 +41,14 @@ async function postJSON(path, body = {}) {
   const url = new URL(BASE + path, location.origin)
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   })
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/login'
+    throw new Error('認証が必要です')
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || res.statusText)
@@ -43,7 +59,12 @@ async function postJSON(path, body = {}) {
 async function post(path, params = {}) {
   const url = new URL(BASE + path, location.origin)
   Object.entries(params).forEach(([k, v]) => v != null && url.searchParams.set(k, v))
-  const res = await fetch(url, { method: 'POST' })
+  const res = await fetch(url, { method: 'POST', headers: authHeaders() })
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/login'
+    throw new Error('認証が必要です')
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || res.statusText)
@@ -54,7 +75,12 @@ async function post(path, params = {}) {
 async function del(path, params = {}) {
   const url = new URL(BASE + path, location.origin)
   Object.entries(params).forEach(([k, v]) => v != null && url.searchParams.set(k, v))
-  const res = await fetch(url, { method: 'DELETE' })
+  const res = await fetch(url, { method: 'DELETE', headers: authHeaders() })
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/login'
+    throw new Error('認証が必要です')
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || res.statusText)
@@ -63,6 +89,10 @@ async function del(path, params = {}) {
 }
 
 export const api = {
+  // 認証
+  login: (user_id, password) => postJSON('/auth/login', { user_id, password }),
+  me: () => get('/auth/me'),
+  // 公開API
   status: () => get('/status'),
   companies: (p) => get('/companies', p),
   company: (id) => get(`/companies/${id}`),
@@ -79,13 +109,13 @@ export const api = {
   removeTag: (edinetCode, tag) => del(`/tags/${edinetCode}`, { tag }),
   // 検索・アラート
   companySearch: (q) => get('/company-search', { q }),
-  alerts: () => get('/alerts', { device_id: deviceId }),
+  alerts: () => get('/alerts'),
   // 米国株
   usScreener: (p) => get('/us-screener', p),
-  // デモトレード（端末ごとに分離）
-  demoTrades: () => get('/demo-trades', { device_id: deviceId }),
-  createTrade: (trade) => postJSON('/demo-trades', { ...trade, device_id: deviceId }),
-  deleteTrade: (id) => del(`/demo-trades/${id}`, { device_id: deviceId }),
-  demoPortfolio: () => get('/demo-portfolio', { device_id: deviceId }),
+  // デモトレード（ユーザーごと）
+  demoTrades: () => get('/demo-trades'),
+  createTrade: (trade) => postJSON('/demo-trades', trade),
+  deleteTrade: (id) => del(`/demo-trades/${id}`),
+  demoPortfolio: () => get('/demo-portfolio'),
   stockHistory: (code, period) => get(`/stock-history/${code}`, { period }),
 }
