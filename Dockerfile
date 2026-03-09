@@ -17,8 +17,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Backend code
 COPY backend/ ./backend/
 
-# Env file (user credentials, JWT secret)
-COPY .env ./.env
+# Auth credentials (baked into image for private use)
+ENV JWT_SECRET=snowwillow_secret_2026
+ENV USER_1_ID=takeshi
+ENV USER_1_PW=changeme1
+ENV USER_2_ID=user2
+ENV USER_2_PW=changeme2
+ENV USER_3_ID=user3
+ENV USER_3_PW=changeme3
+ENV USER_4_ID=user4
+ENV USER_4_PW=changeme4
 
 # SQLite DB
 COPY data/edinet.db ./data/edinet.db
