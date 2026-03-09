@@ -2065,7 +2065,7 @@ def get_alerts(device_id: str = Query("", description="端末ID")) -> dict:
 
 # --------------- 米国株スクリーニング API ---------------
 
-# 人気米国株リスト (S&P500 上位 + テック + 高配当 等)
+# 米国株ユニバース (S&P500 主要 ~150銘柄)
 US_STOCK_UNIVERSE = {
     # メガキャップテック
     "AAPL": "Apple", "MSFT": "Microsoft", "GOOGL": "Alphabet", "AMZN": "Amazon",
@@ -2073,30 +2073,55 @@ US_STOCK_UNIVERSE = {
     "ORCL": "Oracle", "CRM": "Salesforce", "ADBE": "Adobe", "AMD": "AMD",
     "INTC": "Intel", "CSCO": "Cisco", "QCOM": "Qualcomm", "TXN": "Texas Instruments",
     "IBM": "IBM", "NFLX": "Netflix", "PYPL": "PayPal", "SHOP": "Shopify",
+    "NOW": "ServiceNow", "INTU": "Intuit", "AMAT": "Applied Materials",
+    "MU": "Micron", "LRCX": "Lam Research", "KLAC": "KLA Corp",
+    "SNPS": "Synopsys", "CDNS": "Cadence Design", "PANW": "Palo Alto Networks",
+    "CRWD": "CrowdStrike", "FTNT": "Fortinet", "MRVL": "Marvell Technology",
     # 金融
     "BRK-B": "Berkshire Hathaway", "JPM": "JPMorgan Chase", "V": "Visa",
     "MA": "Mastercard", "BAC": "Bank of America", "WFC": "Wells Fargo",
     "GS": "Goldman Sachs", "MS": "Morgan Stanley", "AXP": "American Express",
-    "BLK": "BlackRock",
+    "BLK": "BlackRock", "SCHW": "Charles Schwab", "C": "Citigroup",
+    "USB": "U.S. Bancorp", "PNC": "PNC Financial", "TFC": "Truist Financial",
+    "AIG": "AIG", "MET": "MetLife", "PRU": "Prudential Financial",
+    "ICE": "Intercontinental Exchange", "CME": "CME Group",
     # ヘルスケア
     "JNJ": "Johnson & Johnson", "UNH": "UnitedHealth", "PFE": "Pfizer",
     "MRK": "Merck", "ABBV": "AbbVie", "LLY": "Eli Lilly", "TMO": "Thermo Fisher",
     "ABT": "Abbott Labs", "BMY": "Bristol-Myers Squibb", "AMGN": "Amgen",
+    "GILD": "Gilead Sciences", "ISRG": "Intuitive Surgical", "VRTX": "Vertex Pharma",
+    "REGN": "Regeneron", "MDT": "Medtronic", "SYK": "Stryker",
+    "DHR": "Danaher", "BDX": "Becton Dickinson", "ZTS": "Zoetis",
+    "CI": "Cigna", "ELV": "Elevance Health", "HUM": "Humana",
     # 消費財・小売
     "WMT": "Walmart", "PG": "Procter & Gamble", "KO": "Coca-Cola",
     "PEP": "PepsiCo", "COST": "Costco", "MCD": "McDonald's",
     "NKE": "Nike", "SBUX": "Starbucks", "HD": "Home Depot", "LOW": "Lowe's",
+    "TGT": "Target", "CL": "Colgate-Palmolive", "MDLZ": "Mondelez",
+    "KHC": "Kraft Heinz", "GIS": "General Mills", "K": "Kellanova",
+    "EL": "Estee Lauder", "MO": "Altria", "PM": "Philip Morris",
+    "TJX": "TJX Companies", "ROST": "Ross Stores",
     # 工業・エネルギー
     "XOM": "Exxon Mobil", "CVX": "Chevron", "CAT": "Caterpillar",
     "BA": "Boeing", "GE": "GE Aerospace", "HON": "Honeywell",
     "UNP": "Union Pacific", "RTX": "RTX Corp", "DE": "Deere & Co",
-    "LMT": "Lockheed Martin",
+    "LMT": "Lockheed Martin", "MMM": "3M", "EMR": "Emerson Electric",
+    "ETN": "Eaton Corp", "ITW": "Illinois Tool Works", "WM": "Waste Management",
+    "GD": "General Dynamics", "NOC": "Northrop Grumman",
+    "COP": "ConocoPhillips", "SLB": "Schlumberger", "EOG": "EOG Resources",
+    "PSX": "Phillips 66", "VLO": "Valero Energy",
+    "FDX": "FedEx", "UPS": "UPS",
     # 通信・メディア
     "DIS": "Disney", "CMCSA": "Comcast", "T": "AT&T", "VZ": "Verizon",
-    "TMUS": "T-Mobile US",
+    "TMUS": "T-Mobile US", "CHTR": "Charter Communications",
     # 不動産・公益
     "NEE": "NextEra Energy", "SO": "Southern Co", "DUK": "Duke Energy",
-    "AMT": "American Tower", "PLD": "Prologis",
+    "AMT": "American Tower", "PLD": "Prologis", "D": "Dominion Energy",
+    "AEP": "American Electric Power", "EXC": "Exelon", "SRE": "Sempra Energy",
+    "SPG": "Simon Property Group", "O": "Realty Income",
+    # 素材
+    "LIN": "Linde", "APD": "Air Products", "SHW": "Sherwin-Williams",
+    "FCX": "Freeport-McMoRan", "NEM": "Newmont", "DOW": "Dow Inc",
 }
 
 # 米国株データキャッシュ (ticker -> (timestamp, data))
@@ -2134,6 +2159,7 @@ def _fetch_us_stock_info(ticker: str) -> dict | None:
         net_income = info.get("netIncomeToCommon")
         operating_margin = info.get("operatingMargins")
         profit_margin = info.get("profitMargins")
+        gross_margins = info.get("grossMargins")
         total_cash = info.get("totalCash")
         total_assets = info.get("totalAssets") if info.get("totalAssets") else None
         total_debt = info.get("totalDebt")
@@ -2142,48 +2168,68 @@ def _fetch_us_stock_info(ticker: str) -> dict | None:
         earnings_growth = info.get("earningsGrowth")
         sector = info.get("sector", "")
         industry = info.get("industry", "")
+        # 追加: 5層スコアに必要なフィールド
+        beta = info.get("beta")
+        debt_to_equity = info.get("debtToEquity")  # percentage (e.g. 120 = 120%)
+        current_ratio = info.get("currentRatio")
+        payout_ratio = info.get("payoutRatio")
+        roa = info.get("returnOnAssets")
+        hi52 = info.get("fiftyTwoWeekHigh")
+        lo52 = info.get("fiftyTwoWeekLow")
 
-        # 現金比率を推定 (total_cash / (total_cash + total_debt + market_cap))
+        # 現金比率を推定
         cash_ratio = None
         if total_cash and total_assets:
             cash_ratio = total_cash / total_assets
         elif total_cash and market_cap:
-            # total_assetsがない場合は概算
             estimated_assets = market_cap + (total_debt or 0)
             if estimated_assets > 0:
                 cash_ratio = total_cash / estimated_assets
 
-        # equity_ratio (自己資本比率) は米国株の場合 info から直接取れないので推定
+        # equity_ratio (自己資本比率) 推定
         equity_ratio = None
         shares = info.get("sharesOutstanding")
         if bps and shares and total_assets:
             equity = bps * shares
             equity_ratio = equity / total_assets
+        elif debt_to_equity is not None and debt_to_equity > 0:
+            equity_ratio = 1.0 / (1.0 + debt_to_equity / 100.0)
+
+        def _r(v, d=2):
+            return round(float(v), d) if v is not None else None
 
         data = {
             "ticker": ticker,
             "company_name": US_STOCK_UNIVERSE.get(ticker, info.get("shortName", ticker)),
             "sector": sector,
             "industry": industry,
-            "price": round(float(price), 2) if price else None,
+            "price": _r(price),
             "market_cap": market_cap,
-            "per": round(float(per), 2) if per else None,
-            "pbr": round(float(pbr), 2) if pbr else None,
-            "roe": round(float(roe), 4) if roe else None,
-            "eps": round(float(eps), 2) if eps else None,
-            "bps": round(float(bps), 2) if bps else None,
-            "dividend": round(float(dividend), 2) if dividend else None,
-            "dividend_yield": round(float(dividend_yield), 4) if dividend_yield else None,
+            "per": _r(per),
+            "pbr": _r(pbr),
+            "roe": _r(roe, 4),
+            "eps": _r(eps),
+            "bps": _r(bps),
+            "dividend": _r(dividend),
+            "dividend_yield": _r(dividend_yield, 4),
             "revenue": revenue,
             "net_income": net_income,
-            "operating_margin": round(float(operating_margin), 4) if operating_margin else None,
-            "profit_margin": round(float(profit_margin), 4) if profit_margin else None,
-            "cash_ratio": round(float(cash_ratio), 4) if cash_ratio else None,
-            "equity_ratio": round(float(equity_ratio), 4) if equity_ratio else None,
+            "operating_margin": _r(operating_margin, 4),
+            "profit_margin": _r(profit_margin, 4),
+            "gross_margins": _r(gross_margins, 4),
+            "cash_ratio": _r(cash_ratio, 4),
+            "equity_ratio": _r(equity_ratio, 4),
             "fcf": free_cash_flow,
-            "revenue_growth": round(float(revenue_growth), 4) if revenue_growth else None,
-            "earnings_growth": round(float(earnings_growth), 4) if earnings_growth else None,
+            "revenue_growth": _r(revenue_growth, 4),
+            "earnings_growth": _r(earnings_growth, 4),
             "total_debt": total_debt,
+            "beta": _r(beta),
+            "debt_to_equity": _r(debt_to_equity),
+            "current_ratio": _r(current_ratio),
+            "payout_ratio": _r(payout_ratio, 4),
+            "roa": _r(roa, 4),
+            "hi52": _r(hi52),
+            "lo52": _r(lo52),
         }
 
         with _us_cache_lock:
@@ -2194,53 +2240,164 @@ def _fetch_us_stock_info(ticker: str) -> dict | None:
         return None
 
 
-def _takehara_score_us(d: dict) -> tuple[float, dict]:
-    """米国株にも竹原式スコアを適用 (0-100点)"""
-    score = 0.0
-    parts = {}
+# ── 米国株 5層スコアリング ──
 
-    # PER: 15以下が理想。0-40の範囲で逆数スコア (25点満点)
+def _us_value_score(d: dict) -> tuple[float, dict]:
+    """A層: Value (割安度) 0-100点
+    PER(25) + PBR(20) + ROE(20) + OPM(15) + Cash/FCF(20)
+    """
+    s = 0.0
+    parts = {}
     per = d.get("per")
     if per and per > 0:
-        per_score = max(0, min(25, 25 * (1 - (per - 5) / 35)))
-        score += per_score
-        parts["per"] = round(per_score, 1)
-
-    # PBR: 1以下が理想 (20点満点)
+        v = max(0, min(25, 25 * (1 - (per - 5) / 35)))
+        s += v; parts["per"] = round(v, 1)
     pbr = d.get("pbr")
     if pbr is not None and pbr > 0:
-        pbr_score = max(0, min(20, 20 * (1 - (pbr - 0.3) / 2.7)))
-        score += pbr_score
-        parts["pbr"] = round(pbr_score, 1)
-
-    # ROE: 15%以上で満点 (20点満点)
+        v = max(0, min(20, 20 * (1 - (pbr - 0.3) / 4.7)))
+        s += v; parts["pbr"] = round(v, 1)
     roe = d.get("roe")
     if roe and roe > 0:
-        roe_score = max(0, min(20, 20 * min(1, roe / 0.15)))
-        score += roe_score
-        parts["roe"] = round(roe_score, 1)
-
-    # 営業利益率: 15%以上で満点 (15点満点)
+        v = max(0, min(20, 20 * min(1, roe / 0.15)))
+        s += v; parts["roe"] = round(v, 1)
     om = d.get("operating_margin")
     if om and om > 0:
-        om_score = max(0, min(15, 15 * min(1, om / 0.15)))
-        score += om_score
-        parts["operating_margin"] = round(om_score, 1)
-
-    # 現金比率: 30%以上で満点 (10点満点)
+        v = max(0, min(15, 15 * min(1, om / 0.15)))
+        s += v; parts["opm"] = round(v, 1)
     cr = d.get("cash_ratio")
+    fcf = d.get("fcf")
+    cash_v = 0.0
     if cr and cr > 0:
-        cash_score = max(0, min(10, 10 * min(1, cr / 0.3)))
-        score += cash_score
-        parts["cash_ratio"] = round(cash_score, 1)
+        cash_v += max(0, min(10, 10 * min(1, cr / 0.3)))
+    if fcf and fcf > 0:
+        cash_v += 10
+    parts["cash_fcf"] = round(cash_v, 1)
+    s += cash_v
+    return round(min(100, s), 1), parts
 
-    # FCF正: ボーナス (10点)
+
+def _us_quality_score(d: dict) -> tuple[float, dict]:
+    """B層: Quality (ビジネスの質) 0-100点
+    粗利率(25) + 営業利益率(25) + ROE(25) + FCF/Revenue(25)
+    """
+    s = 0.0
+    parts = {}
+    gm = d.get("gross_margins")
+    if gm and gm > 0:
+        v = max(0, min(25, 25 * min(1, gm / 0.50)))
+        s += v; parts["gross_margin"] = round(v, 1)
+    om = d.get("operating_margin")
+    if om and om > 0:
+        v = max(0, min(25, 25 * min(1, om / 0.20)))
+        s += v; parts["opm"] = round(v, 1)
+    roe = d.get("roe")
+    if roe and roe > 0:
+        v = max(0, min(25, 25 * min(1, roe / 0.20)))
+        s += v; parts["roe"] = round(v, 1)
+    fcf = d.get("fcf")
+    rev = d.get("revenue")
+    if fcf and rev and rev > 0:
+        fcf_ratio = fcf / rev
+        v = max(0, min(25, 25 * min(1, fcf_ratio / 0.15)))
+        s += v; parts["fcf_rev"] = round(v, 1)
+    return round(min(100, s), 1), parts
+
+
+def _us_momentum_score(d: dict) -> tuple[float, dict]:
+    """C層: Growth/Momentum (成長性) 0-100点
+    売上成長(30) + 利益成長(30) + 52週高値近接度(25) + ROA(15)
+    """
+    s = 0.0
+    parts = {}
+    rg = d.get("revenue_growth")
+    if rg is not None:
+        v = max(0, min(30, 30 * min(1, (rg + 0.05) / 0.30)))
+        s += v; parts["rev_growth"] = round(v, 1)
+    eg = d.get("earnings_growth")
+    if eg is not None:
+        v = max(0, min(30, 30 * min(1, (eg + 0.05) / 0.40)))
+        s += v; parts["earn_growth"] = round(v, 1)
+    price = d.get("price")
+    hi52 = d.get("hi52")
+    lo52 = d.get("lo52")
+    if price and hi52 and lo52 and hi52 > lo52:
+        proximity = (price - lo52) / (hi52 - lo52)
+        v = max(0, min(25, 25 * proximity))
+        s += v; parts["hi52_prox"] = round(v, 1)
+    roa = d.get("roa")
+    if roa and roa > 0:
+        v = max(0, min(15, 15 * min(1, roa / 0.10)))
+        s += v; parts["roa"] = round(v, 1)
+    return round(min(100, s), 1), parts
+
+
+def _us_dividend_score(d: dict) -> tuple[float, dict]:
+    """D層: Dividend/Event (配当・還元) 0-100点
+    配当利回り(35) + 配当性向健全度(35) + FCF正(30)
+    """
+    s = 0.0
+    parts = {}
+    dy = d.get("dividend_yield")
+    if dy and dy > 0:
+        v = max(0, min(35, 35 * min(1, dy / 0.04)))
+        s += v; parts["div_yield"] = round(v, 1)
+    pr = d.get("payout_ratio")
+    if pr is not None:
+        if 0.15 <= pr <= 0.60:
+            v = 35.0
+        elif pr <= 0:
+            v = 0.0
+        elif pr < 0.15:
+            v = max(0, 35 * pr / 0.15)
+        elif pr <= 0.85:
+            v = max(0, 35 * (1 - (pr - 0.60) / 0.25))
+        else:
+            v = 0.0
+        s += v; parts["payout"] = round(v, 1)
     fcf = d.get("fcf")
     if fcf and fcf > 0:
-        score += 10
-        parts["fcf"] = 10
+        s += 30; parts["fcf_pos"] = 30.0
+    return round(min(100, s), 1), parts
 
-    return round(score, 1), parts
+
+def _us_stability_score(d: dict) -> tuple[float, dict]:
+    """E層: Stability (安定性) 0-100点
+    Beta(30) + D/E Ratio(35) + Current Ratio(35)
+    """
+    s = 0.0
+    parts = {}
+    beta = d.get("beta")
+    if beta is not None:
+        v = max(0, min(30, 30 * (1 - max(0, beta - 0.5) / 1.5)))
+        s += v; parts["beta"] = round(v, 1)
+    de = d.get("debt_to_equity")
+    if de is not None and de >= 0:
+        v = max(0, min(35, 35 * (1 - min(1, de / 200))))
+        s += v; parts["de_ratio"] = round(v, 1)
+    cr = d.get("current_ratio")
+    if cr is not None and cr > 0:
+        v = max(0, min(35, 35 * min(1, cr / 2.0)))
+        s += v; parts["current"] = round(v, 1)
+    return round(min(100, s), 1), parts
+
+
+# 米国株5層 重み (日本株Phase3に対応)
+US_SCORE_WEIGHTS = {"value": 0.30, "quality": 0.25, "momentum": 0.20, "dividend": 0.15, "stability": 0.10}
+
+
+def _calc_us_total_score(
+    value: float, quality: float, momentum: float, dividend: float, stability: float,
+) -> float:
+    """5層の加重平均 (欠損層は重み再配分)"""
+    layers = {"value": value, "quality": quality, "momentum": momentum, "dividend": dividend, "stability": stability}
+    active = {k: v for k, v in layers.items() if v > 0}
+    if not active:
+        return 0.0
+    w = {k: US_SCORE_WEIGHTS[k] for k in active}
+    total_w = sum(w.values())
+    if total_w <= 0:
+        return 0.0
+    return round(sum(layers[k] * w[k] / total_w for k in active), 1)
 
 
 @app.get("/api/us-screener")
@@ -2296,10 +2453,26 @@ def us_screener(
         if sector and d.get("sector") != sector:
             continue
 
-        # スコア計算
-        score, parts = _takehara_score_us(d)
-        d["takehara_score"] = score
-        d["score_parts"] = parts
+        # 5層スコア計算
+        v_score, v_parts = _us_value_score(d)
+        q_score, q_parts = _us_quality_score(d)
+        m_score, m_parts = _us_momentum_score(d)
+        dv_score, dv_parts = _us_dividend_score(d)
+        st_score, st_parts = _us_stability_score(d)
+        total = _calc_us_total_score(v_score, q_score, m_score, dv_score, st_score)
+        d["takehara_score"] = total
+        d["value_score"] = v_score
+        d["quality_score"] = q_score
+        d["momentum_score"] = m_score
+        d["dividend_score"] = dv_score
+        d["stability_score"] = st_score
+        d["score_layers"] = {
+            "value": {"score": v_score, "parts": v_parts},
+            "quality": {"score": q_score, "parts": q_parts},
+            "momentum": {"score": m_score, "parts": m_parts},
+            "dividend": {"score": dv_score, "parts": dv_parts},
+            "stability": {"score": st_score, "parts": st_parts},
+        }
 
         # 売り時目安
         d.update(calc_target_prices(d.get("eps"), d.get("bps")))
@@ -2309,6 +2482,11 @@ def us_screener(
     # ソート
     sort_defaults = {
         "score": ("takehara_score", True),
+        "value_score": ("value_score", True),
+        "quality_score": ("quality_score", True),
+        "momentum_score": ("momentum_score", True),
+        "dividend_score": ("dividend_score", True),
+        "stability_score": ("stability_score", True),
         "per": ("per", False),
         "pbr": ("pbr", False),
         "roe": ("roe", True),

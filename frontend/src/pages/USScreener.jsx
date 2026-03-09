@@ -22,29 +22,80 @@ function pct(v, digits = 1) {
   return `${(Number(v) * 100).toFixed(digits)}%`
 }
 
-function ScoreBar({ score }) {
+function ScoreBar({ score, width = 50 }) {
   const ratio = Math.min(100, (score / 100) * 100)
   const color = score >= 70 ? 'var(--green)' : score >= 50 ? 'var(--yellow)' : score >= 30 ? 'var(--accent)' : 'var(--red)'
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div style={{ width: 50, height: 5, background: 'var(--surface2)', borderRadius: 3, overflow: 'hidden' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <div style={{ width, height: 5, background: 'var(--surface2)', borderRadius: 3, overflow: 'hidden' }}>
         <div style={{ width: `${ratio}%`, height: '100%', background: color, borderRadius: 3 }} />
       </div>
-      <span style={{ fontWeight: 700, fontSize: 12, color, minWidth: 26 }}>{score}</span>
+      <span style={{ fontWeight: 700, fontSize: 11, color, minWidth: 22 }}>{score}</span>
+    </div>
+  )
+}
+
+const LAYER_LABELS = [
+  { key: 'value_score', short: 'V', label: 'Value', color: '#6366f1' },
+  { key: 'quality_score', short: 'Q', label: 'Quality', color: '#06b6d4' },
+  { key: 'momentum_score', short: 'M', label: 'Momentum', color: '#f59e0b' },
+  { key: 'dividend_score', short: 'D', label: 'Dividend', color: '#10b981' },
+  { key: 'stability_score', short: 'S', label: 'Stability', color: '#8b5cf6' },
+]
+
+function LayerMiniBar({ row, isMobile }) {
+  if (isMobile) {
+    return (
+      <div style={{ display: 'flex', gap: 2 }}>
+        {LAYER_LABELS.map(l => {
+          const v = row[l.key] ?? 0
+          return (
+            <div key={l.key} title={`${l.label}: ${v}`}
+              style={{
+                width: 6, height: 18, borderRadius: 2, background: 'var(--surface2)',
+                position: 'relative', overflow: 'hidden',
+              }}>
+              <div style={{
+                position: 'absolute', bottom: 0, width: '100%',
+                height: `${Math.min(100, v)}%`, background: l.color, borderRadius: 2,
+              }} />
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+  return (
+    <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+      {LAYER_LABELS.map(l => {
+        const v = row[l.key] ?? 0
+        return (
+          <div key={l.key} title={`${l.label}: ${v}`} style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 8, color: l.color, fontWeight: 700, lineHeight: 1 }}>{l.short}</div>
+            <div style={{
+              width: 16, height: 3, background: 'var(--surface2)', borderRadius: 2,
+              overflow: 'hidden', marginTop: 1,
+            }}>
+              <div style={{ width: `${Math.min(100, v)}%`, height: '100%', background: l.color, borderRadius: 2 }} />
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
 
 const US_COLUMNS = [
   { key: 'company_name', label: 'Company', align: 'left', defaultDir: 'asc' },
-  { key: 'sector',       label: 'Sector', align: 'left', defaultDir: 'asc' },
-  { key: 'score',        label: 'Score', align: 'right', defaultDir: 'desc' },
-  { key: 'per',          label: 'PER', align: 'right', defaultDir: 'asc' },
-  { key: 'pbr',          label: 'PBR', align: 'right', defaultDir: 'asc' },
+  { key: 'sector',       label: 'Sector', align: 'left', defaultDir: 'asc', hideMobile: true },
+  { key: 'score',        label: 'Total', align: 'right', defaultDir: 'desc' },
+  { key: 'layers',       label: 'Layers', align: 'center', defaultDir: 'desc', noSort: true },
+  { key: 'per',          label: 'PER', align: 'right', defaultDir: 'asc', hideMobile: true },
+  { key: 'pbr',          label: 'PBR', align: 'right', defaultDir: 'asc', hideMobile: true },
   { key: 'roe',          label: 'ROE', align: 'right', defaultDir: 'desc' },
-  { key: 'operating_margin', label: 'OPM', align: 'right', defaultDir: 'desc' },
+  { key: 'operating_margin', label: 'OPM', align: 'right', defaultDir: 'desc', hideMobile: true },
   { key: 'dividend',     label: 'Div $', align: 'right', defaultDir: 'desc' },
-  { key: 'market_cap',   label: 'MCap', align: 'right', defaultDir: 'desc' },
+  { key: 'market_cap',   label: 'MCap', align: 'right', defaultDir: 'desc', hideMobile: true },
 ]
 
 const PRESETS = {
@@ -61,10 +112,10 @@ export default function USScreener() {
   const [sortBy, setSortBy] = useState('score')
   const [sortDir, setSortDir] = useState('desc')
   const [appliedParams, setAppliedParams] = useState({ sort_by: 'score', sort_dir: 'desc' })
+  const [expanded, setExpanded] = useState(null)
 
   const fetcher = useCallback(() => {
     const p = { ...appliedParams }
-    // remove empty values
     for (const [k, v] of Object.entries(p)) {
       if (v === '' || v === null || v === undefined || v === false) delete p[k]
     }
@@ -86,7 +137,7 @@ export default function USScreener() {
 
   function handleSort(colKey) {
     const col = US_COLUMNS.find(c => c.key === colKey)
-    if (!col) return
+    if (!col || col.noSort) return
     let newDir
     if (sortBy === colKey) {
       newDir = sortDir === 'asc' ? 'desc' : 'asc'
@@ -99,17 +150,21 @@ export default function USScreener() {
   }
 
   function getSortIcon(colKey) {
+    const col = US_COLUMNS.find(c => c.key === colKey)
+    if (col?.noSort) return null
     if (sortBy !== colKey) return <span style={{ opacity: 0.25, marginLeft: 2, fontSize: 10 }}>&#x25B2;&#x25BC;</span>
-    return <span style={{ marginLeft: 3, fontSize: 10, color: 'var(--accent)' }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
+    return <span style={{ marginLeft: 3, fontSize: 10, color: 'var(--accent)' }}>{sortDir === 'asc' ? '\u25B2' : '\u25BC'}</span>
   }
+
+  const visibleCols = isMobile ? US_COLUMNS.filter(c => !c.hideMobile) : US_COLUMNS
 
   return (
     <div>
       <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 22 }}>🇺🇸</span> 米国株スクリーニング
+        <span style={{ fontSize: 22 }}>{'\ud83c\uddfa\ud83c\uddf8'}</span> 米国株スクリーニング
       </h1>
       <p style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16 }}>
-        S&P500主要75銘柄に竹原式スコアリングを適用 (Yahoo Finance リアルタイム)
+        S&P500主要{data?.universe_size ?? '150'}銘柄 / 5層スコアリング (Yahoo Finance リアルタイム)
       </p>
 
       {/* プリセット */}
@@ -188,7 +243,7 @@ export default function USScreener() {
           <div style={{ padding: 40, textAlign: 'center' }}>
             <span className="spinner" />
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 8 }}>
-              Yahoo Financeからリアルタイムデータを取得中...（初回は30秒程度かかります）
+              Yahoo Financeからリアルタイムデータを取得中...（初回は60秒程度かかります）
             </div>
           </div>
         ) : (
@@ -196,6 +251,7 @@ export default function USScreener() {
             <div style={{
               padding: '10px 16px', borderBottom: '1px solid var(--border)',
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              flexWrap: 'wrap', gap: 8,
             }}>
               <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>
                 {data?.total ?? 0}銘柄 / {data?.universe_size ?? 0}銘柄中
@@ -226,15 +282,15 @@ export default function USScreener() {
             </div>
 
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ minWidth: isMobile ? 600 : 1100, fontSize: isMobile ? 11 : undefined }}>
+              <table style={{ minWidth: isMobile ? 420 : 1100, fontSize: isMobile ? 11 : undefined }}>
                 <thead>
                   <tr>
-                    <th style={{ width: 40 }}>#</th>
-                    {US_COLUMNS.map(col => (
+                    <th style={{ width: 32 }}>#</th>
+                    {visibleCols.map(col => (
                       <th key={col.key}
                         onClick={() => handleSort(col.key)}
                         style={{
-                          textAlign: col.align, cursor: 'pointer', userSelect: 'none',
+                          textAlign: col.align, cursor: col.noSort ? 'default' : 'pointer', userSelect: 'none',
                           whiteSpace: 'nowrap',
                           background: sortBy === col.key ? 'var(--accent-dim, rgba(99,102,241,0.08))' : undefined,
                         }}
@@ -256,55 +312,93 @@ export default function USScreener() {
                     let gapLabel = ''
                     if (target && row.price) {
                       const g = ((row.price - target) / target) * 100
-                      if (g <= -20) { gapColor = 'var(--green)'; gapLabel = `${g.toFixed(0)}%` }
-                      else if (g <= 0) { gapColor = 'var(--green)'; gapLabel = `${g.toFixed(0)}%` }
+                      if (g <= 0) { gapColor = 'var(--green)'; gapLabel = `${g.toFixed(0)}%` }
                       else if (g <= 20) { gapColor = 'var(--yellow)'; gapLabel = `+${g.toFixed(0)}%` }
                       else { gapColor = 'var(--red)'; gapLabel = `+${g.toFixed(0)}%` }
                     }
-                    return (
-                      <tr key={row.ticker}>
+                    const isExpanded = expanded === row.ticker
+                    return [
+                      <tr key={row.ticker} onClick={() => setExpanded(isExpanded ? null : row.ticker)}
+                        style={{ cursor: 'pointer' }}>
                         <td style={{ color: 'var(--text-dim)', fontSize: 11 }}>{i + 1}</td>
-                        <td>
-                          <div style={{ fontWeight: 600, fontSize: 13 }}>{row.ticker}</div>
-                          <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{row.company_name}</div>
-                        </td>
-                        <td style={{ fontSize: 10, color: 'var(--text-dim)' }}>{row.sector || '-'}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          <ScoreBar score={row.takehara_score} />
-                        </td>
-                        <td className="number" style={{ textAlign: 'right', fontWeight: 500 }}>
-                          {row.per != null ? Number(row.per).toFixed(1) : '-'}
-                        </td>
-                        <td className="number" style={{ textAlign: 'right' }}>
-                          {row.pbr != null ? Number(row.pbr).toFixed(2) : '-'}
-                        </td>
-                        <td className="number" style={{ textAlign: 'right' }}>{pct(row.roe)}</td>
-                        <td className="number" style={{ textAlign: 'right' }}>{pct(row.operating_margin)}</td>
-                        <td className="number" style={{ textAlign: 'right' }}>
-                          {row.dividend != null ? `$${Number(row.dividend).toFixed(2)}` : '-'}
-                        </td>
-                        <td className="number" style={{ textAlign: 'right', fontSize: 11 }}>
-                          {fmtCap(row.market_cap)}
-                        </td>
-                        <td className="number" style={{ textAlign: 'right', fontWeight: 600 }}>
-                          {fmtUSD(row.price)}
-                        </td>
+                        {visibleCols.map(col => {
+                          if (col.key === 'company_name') return (
+                            <td key={col.key}>
+                              <div style={{ fontWeight: 600, fontSize: 13 }}>{row.ticker}</div>
+                              <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                                {row.company_name}{isMobile && row.sector ? ` / ${row.sector}` : ''}
+                              </div>
+                            </td>
+                          )
+                          if (col.key === 'sector') return <td key={col.key} style={{ fontSize: 10, color: 'var(--text-dim)' }}>{row.sector || '-'}</td>
+                          if (col.key === 'score') return (
+                            <td key={col.key} style={{ textAlign: 'right' }}>
+                              <ScoreBar score={row.takehara_score} width={isMobile ? 36 : 50} />
+                            </td>
+                          )
+                          if (col.key === 'layers') return (
+                            <td key={col.key} style={{ textAlign: 'center' }}>
+                              <LayerMiniBar row={row} isMobile={isMobile} />
+                            </td>
+                          )
+                          if (col.key === 'per') return <td key={col.key} className="number" style={{ textAlign: 'right', fontWeight: 500 }}>{row.per != null ? Number(row.per).toFixed(1) : '-'}</td>
+                          if (col.key === 'pbr') return <td key={col.key} className="number" style={{ textAlign: 'right' }}>{row.pbr != null ? Number(row.pbr).toFixed(2) : '-'}</td>
+                          if (col.key === 'roe') return <td key={col.key} className="number" style={{ textAlign: 'right' }}>{pct(row.roe)}</td>
+                          if (col.key === 'operating_margin') return <td key={col.key} className="number" style={{ textAlign: 'right' }}>{pct(row.operating_margin)}</td>
+                          if (col.key === 'dividend') return <td key={col.key} className="number" style={{ textAlign: 'right' }}>{row.dividend != null ? `$${Number(row.dividend).toFixed(2)}` : '-'}</td>
+                          if (col.key === 'market_cap') return <td key={col.key} className="number" style={{ textAlign: 'right', fontSize: 11 }}>{fmtCap(row.market_cap)}</td>
+                          return null
+                        })}
+                        <td className="number" style={{ textAlign: 'right', fontWeight: 600 }}>{fmtUSD(row.price)}</td>
                         <td style={{ textAlign: 'right', fontSize: 11 }}>
                           {target ? (
                             <div>
                               <span style={{ color: 'var(--text-dim)' }}>{fmtUSD(target)}</span>
-                              <span style={{ marginLeft: 4, fontWeight: 600, color: gapColor, fontSize: 10 }}>
-                                {gapLabel}
-                              </span>
+                              <span style={{ marginLeft: 4, fontWeight: 600, color: gapColor, fontSize: 10 }}>{gapLabel}</span>
                             </div>
                           ) : '-'}
                         </td>
-                      </tr>
-                    )
+                      </tr>,
+                      isExpanded && (
+                        <tr key={`${row.ticker}-detail`}>
+                          <td colSpan={visibleCols.length + 3} style={{ padding: '8px 12px', background: 'var(--surface)' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(5, 1fr)', gap: 8 }}>
+                              {LAYER_LABELS.map(l => {
+                                const v = row[l.key] ?? 0
+                                return (
+                                  <div key={l.key} style={{
+                                    padding: '6px 8px', borderRadius: 6, background: 'var(--surface2)',
+                                    border: `1px solid ${l.color}22`,
+                                  }}>
+                                    <div style={{ fontSize: 10, color: l.color, fontWeight: 700, marginBottom: 4 }}>
+                                      {l.short} {l.label}
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <div style={{ flex: 1, height: 4, background: 'var(--bg)', borderRadius: 2, overflow: 'hidden' }}>
+                                        <div style={{ width: `${Math.min(100, v)}%`, height: '100%', background: l.color, borderRadius: 2 }} />
+                                      </div>
+                                      <span style={{ fontWeight: 700, fontSize: 12, color: l.color, minWidth: 28, textAlign: 'right' }}>{v}</span>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                            <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-dim)', display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
+                              <span>Beta: {row.beta ?? '-'}</span>
+                              <span>D/E: {row.debt_to_equity != null ? `${row.debt_to_equity}%` : '-'}</span>
+                              <span>Payout: {row.payout_ratio != null ? pct(row.payout_ratio) : '-'}</span>
+                              <span>52wk: {row.lo52 ? fmtUSD(row.lo52) : '-'} - {row.hi52 ? fmtUSD(row.hi52) : '-'}</span>
+                              <span>RevGr: {row.revenue_growth != null ? pct(row.revenue_growth) : '-'}</span>
+                              <span>EarnGr: {row.earnings_growth != null ? pct(row.earnings_growth) : '-'}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ),
+                    ]
                   })}
                   {(!data?.results || data.results.length === 0) && !loading && (
                     <tr>
-                      <td colSpan={12} style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>
+                      <td colSpan={visibleCols.length + 3} style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>
                         条件に一致する銘柄がありません
                       </td>
                     </tr>
