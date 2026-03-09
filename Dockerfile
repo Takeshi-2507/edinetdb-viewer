@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Backend code
 COPY backend/ ./backend/
 
+# Env file (user credentials, JWT secret)
+COPY .env ./.env
+
 # SQLite DB
 COPY data/edinet.db ./data/edinet.db
 

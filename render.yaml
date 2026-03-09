@@ -6,3 +6,21 @@ services:
     envVars:
       - key: EDINET_API_KEY
         sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: USER_1_ID
+        sync: false
+      - key: USER_1_PW
+        sync: false
+      - key: USER_2_ID
+        sync: false
+      - key: USER_2_PW
+        sync: false
+      - key: USER_3_ID
+        sync: false
+      - key: USER_3_PW
+        sync: false
+      - key: USER_4_ID
+        sync: false
+      - key: USER_4_PW
+        sync: false
