@@ -1764,8 +1764,12 @@ class LoginRequest(BaseModel):
 
 @app.post("/api/auth/login")
 def auth_login(req: LoginRequest) -> dict:
+    import hashlib
     users = _load_users()
-    if req.user_id not in users or users[req.user_id] != req.password:
+    if req.user_id not in users:
+        raise HTTPException(status_code=401, detail="IDまたはパスワードが違います")
+    pw_hash = hashlib.sha256(req.password.encode()).hexdigest()
+    if users[req.user_id] != pw_hash:
         raise HTTPException(status_code=401, detail="IDまたはパスワードが違います")
     token = _create_token(req.user_id)
     return {"token": token, "user_id": req.user_id}
