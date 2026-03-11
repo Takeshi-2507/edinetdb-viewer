@@ -2874,6 +2874,834 @@ def us_screener_status() -> dict:
     }
 
 
+# =====================================================================
+# マーケットレジーム・ダッシュボード
+# =====================================================================
+
+# --------------- レジームテーブル作成 ---------------
+
+def _ensure_regime_tables():
+    with get_db(readonly=False) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS macro_indicators (
+            date TEXT NOT NULL, indicator TEXT NOT NULL, value REAL,
+            PRIMARY KEY (date, indicator))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS market_regimes (
+            date TEXT PRIMARY KEY, regime TEXT NOT NULL, sub_regime TEXT,
+            vix_level REAL, yield_spread REAL, sp500_trend TEXT,
+            confidence REAL, details TEXT, updated_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS strategy_models (
+            strategy_id TEXT PRIMARY KEY, name_ja TEXT NOT NULL,
+            description_ja TEXT, allocation TEXT, stock_criteria TEXT,
+            preferred_regimes TEXT, avoid_regimes TEXT, rebalance_frequency TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS backtest_results (
+            strategy_id TEXT NOT NULL, date TEXT NOT NULL, regime TEXT,
+            monthly_return REAL, cumulative_return REAL,
+            sp500_return REAL, sp500_cumulative REAL, drawdown REAL,
+            allocation_snapshot TEXT, PRIMARY KEY (strategy_id, date))""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_macro_date ON macro_indicators(date DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_macro_ind ON macro_indicators(indicator, date DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_regimes_date ON market_regimes(date DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bt_strat ON backtest_results(strategy_id, date)")
+        conn.commit()
+        # Seed strategies
+        _seed_strategy_models(conn)
+
+
+def _seed_strategy_models(conn):
+    strategies = [
+        ("all_weather", "ブリッジウォーター全天候型",
+         "レイ・ダリオの全天候型ポートフォリオ。あらゆる経済環境に対応するリスクパリティ戦略。",
+         json.dumps({"stocks": 30, "bonds_long": 40, "bonds_mid": 15, "gold": 7.5, "commodities": 7.5}),
+         None,
+         json.dumps(["trend_up", "trend_down", "range_bound", "inflation", "risk_off"]),
+         json.dumps([]), "quarterly"),
+        ("buffett_value", "バフェット・バリュー",
+         "高ROE・低PER・安定キャッシュフローの優良企業を割安時に取得し長期保有。",
+         json.dumps({"stocks": 100}),
+         json.dumps({"roe_min": 0.15, "per_max": 25, "operating_margin_min": 0.10,
+                      "fcf_positive": True, "sort_by": "value_score", "limit": 15}),
+         json.dumps(["trend_down", "range_bound"]),
+         json.dumps(["risk_off"]), "quarterly"),
+        ("ark_growth", "ARK グロース",
+         "破壊的イノベーション企業（AI、ロボティクス、ゲノム等）に集中投資。高成長・高ボラティリティ。",
+         json.dumps({"stocks": 100}),
+         json.dumps({"revenue_growth_min": 0.15,
+                      "sector_prefer": ["Technology", "Communication Services", "Healthcare"],
+                      "sort_by": "momentum_score", "limit": 15}),
+         json.dumps(["trend_up"]),
+         json.dumps(["trend_down", "risk_off"]), "monthly"),
+        ("soros_macro", "ソロス・マクロ",
+         "地政学リスク・金融政策を分析し局面に応じて資産配分を大胆に変更。",
+         json.dumps({"stocks": 40, "gold": 20, "bonds_long": 20, "cash": 20}),
+         json.dumps({"sort_by": "takehara_score", "limit": 10}),
+         json.dumps(["risk_off", "inflation"]),
+         json.dumps([]), "monthly"),
+        ("trend_following", "トレンドフォロー",
+         "移動平均線クロスオーバーに基づくトレンド追従。200SMA上の資産のみ保有。",
+         json.dumps({"stocks": 100}),
+         json.dumps({"sort_by": "momentum_score", "limit": 20}),
+         json.dumps(["trend_up"]),
+         json.dumps(["range_bound"]), "monthly"),
+    ]
+    for s in strategies:
+        conn.execute(
+            "INSERT OR IGNORE INTO strategy_models "
+            "(strategy_id,name_ja,description_ja,allocation,stock_criteria,"
+            "preferred_regimes,avoid_regimes,rebalance_frequency) VALUES (?,?,?,?,?,?,?,?)", s)
+    conn.commit()
+
+
+try:
+    _ensure_regime_tables()
+except Exception:
+    pass
+
+
+# --------------- マクロ指標取得 ---------------
+
+MACRO_TICKERS: dict[str, str] = {
+    "vix": "^VIX", "tnx": "^TNX", "fvx": "^FVX", "irx": "^IRX",
+    "gold": "GC=F", "oil": "CL=F", "usd_index": "DX-Y.NYB", "sp500": "^GSPC",
+    "xlk": "XLK", "xlf": "XLF", "xle": "XLE", "xli": "XLI",
+    "xly": "XLY", "xlp": "XLP", "xlre": "XLRE", "xlb": "XLB",
+    "xlu": "XLU", "xlv": "XLV",
+}
+
+FRED_SERIES: dict[str, str] = {
+    "cpi": "CPIAUCSL", "unrate": "UNRATE", "fedfunds": "FEDFUNDS",
+    "yield_spread_fred": "T10Y2Y", "hy_spread": "BAMLH0A0HYM2",
+}
+
+
+def _fetch_macro_history_yf(key: str, period: str = "5y") -> list[dict]:
+    import yfinance as yf
+    ticker = MACRO_TICKERS.get(key)
+    if not ticker:
+        return []
+    try:
+        hist = yf.Ticker(ticker).history(period=period, interval="1d")
+        if hist.empty:
+            return []
+        result = []
+        for idx, row in hist.iterrows():
+            result.append({"date": idx.strftime("%Y-%m-%d"), "value": round(float(row["Close"]), 4)})
+        return result
+    except Exception as e:
+        print(f"[REGIME-BG] yfinance {key}: {e}")
+        return []
+
+
+def _fetch_fred_series(series_id: str, limit: int = 500) -> list[dict]:
+    api_key = os.getenv("FRED_API_KEY")
+    if not api_key:
+        return []
+    try:
+        import httpx
+        resp = httpx.get(
+            "https://api.stlouisfed.org/fred/series/observations",
+            params={"series_id": series_id, "api_key": api_key,
+                    "file_type": "json", "sort_order": "desc", "limit": limit},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return []
+        result = []
+        for obs in resp.json().get("observations", []):
+            if obs["value"] != ".":
+                result.append({"date": obs["date"], "value": float(obs["value"])})
+        return list(reversed(result))
+    except Exception as e:
+        print(f"[REGIME-BG] FRED {series_id}: {e}")
+        return []
+
+
+def _store_macro_indicators(indicators: dict[str, list[dict]]):
+    with get_db(readonly=False) as conn:
+        for key, data_list in indicators.items():
+            for item in data_list:
+                conn.execute(
+                    "INSERT OR REPLACE INTO macro_indicators (date,indicator,value) VALUES (?,?,?)",
+                    (item["date"], key, item["value"]))
+        conn.commit()
+
+
+def _get_latest_macro() -> dict:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT indicator, value, MAX(date) AS date FROM macro_indicators GROUP BY indicator"
+        ).fetchall()
+    return {r["indicator"]: {"value": r["value"], "date": r["date"]} for r in rows}
+
+
+def _get_macro_history(indicator: str, limit: int = 250) -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT date, value FROM macro_indicators WHERE indicator=? ORDER BY date DESC LIMIT ?",
+            (indicator, limit)).fetchall()
+    return [{"date": r["date"], "value": r["value"]} for r in reversed(rows)]
+
+
+# --------------- テクニカル指標ヘルパー ---------------
+
+def _sma(values: list[float], n: int) -> float | None:
+    if len(values) < n:
+        return None
+    return sum(values[-n:]) / n
+
+
+def _rsi(values: list[float], period: int = 14) -> float | None:
+    if len(values) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(-period, 0):
+        diff = values[i] - values[i - 1]
+        gains.append(max(0, diff))
+        losses.append(max(0, -diff))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    return round(100 - (100 / (1 + avg_gain / avg_loss)), 1)
+
+
+def _pct_change(values: list[float], periods: int) -> float | None:
+    if len(values) < periods + 1 or values[-(periods + 1)] == 0:
+        return None
+    return (values[-1] - values[-(periods + 1)]) / values[-(periods + 1)]
+
+
+# --------------- レジーム判定 ---------------
+
+REGIME_LABELS = {
+    "risk_off": "リスクオフ", "inflation": "インフレ局面",
+    "trend_up": "上昇トレンド", "trend_down": "下降トレンド",
+    "range_bound": "レンジ相場",
+}
+REGIME_SUB_LABELS = {
+    "geopolitical_shock": "地政学ショック", "financial_stress": "金融ストレス",
+    "rate_hike_cycle": "利上げサイクル", "stagflation": "スタグフレーション",
+    "strong_bull": "強気相場", "early_recovery": "初期回復",
+    "correction": "調整局面", "bear_market": "弱気相場",
+    "consolidation": "もみ合い",
+}
+
+REGIME_RECOMMEND: dict[str, list[str]] = {
+    "risk_off": ["soros_macro", "all_weather"],
+    "inflation": ["soros_macro", "trend_following"],
+    "trend_up": ["ark_growth", "trend_following"],
+    "trend_down": ["buffett_value", "all_weather"],
+    "range_bound": ["buffett_value", "all_weather"],
+}
+
+
+def _detect_market_regime() -> dict:
+    with get_db() as conn:
+        def _vals(ind: str):
+            rows = conn.execute(
+                "SELECT value FROM macro_indicators WHERE indicator=? ORDER BY date DESC LIMIT 250",
+                (ind,)).fetchall()
+            return [r["value"] for r in reversed(rows)]
+
+        vix_v = _vals("vix")
+        sp_v = _vals("sp500")
+        tnx_v = _vals("tnx")
+        fvx_v = _vals("fvx")
+        gold_v = _vals("gold")
+        oil_v = _vals("oil")
+        # CPI (FRED, monthly)
+        cpi_v = _vals("cpi")
+
+    if not vix_v or not sp_v:
+        return {"regime": "range_bound", "sub_regime": "consolidation",
+                "regime_ja": "レンジ相場", "sub_regime_ja": "もみ合い",
+                "confidence": 0, "vix_level": 0, "yield_spread": 0,
+                "sp500_trend": "unknown", "scores": {}, "details": {}}
+
+    vix_now = vix_v[-1]
+    yield_spread = (tnx_v[-1] - fvx_v[-1]) if tnx_v and fvx_v else 1.0
+    sp_now = sp_v[-1]
+    sp_sma50 = _sma(sp_v, 50)
+    sp_sma200 = _sma(sp_v, 200)
+    sp_rsi_ = _rsi(sp_v)
+    gold_3m = _pct_change(gold_v, 63) or 0
+    oil_3m = _pct_change(oil_v, 63) or 0
+    sp_hi = max(sp_v[-252:]) if len(sp_v) >= 252 else max(sp_v)
+    sp_dd = (sp_now - sp_hi) / sp_hi if sp_hi else 0
+
+    details: dict[str, Any] = {
+        "vix": round(vix_now, 1),
+        "yield_spread": round(yield_spread, 2),
+        "sp500_sma50": round(sp_sma50, 1) if sp_sma50 else None,
+        "sp500_sma200": round(sp_sma200, 1) if sp_sma200 else None,
+        "sp500_rsi": round(sp_rsi_, 1) if sp_rsi_ else None,
+        "sp500_drawdown": round(sp_dd * 100, 1),
+        "gold_3m_pct": round(gold_3m * 100, 1),
+        "oil_3m_pct": round(oil_3m * 100, 1),
+    }
+
+    scores: dict[str, float] = {}
+
+    # --- risk_off ---
+    s = 0
+    sub_ro = "financial_stress"
+    if vix_now > 30: s += 40
+    elif vix_now > 25: s += 20
+    if yield_spread < 0: s += 25
+    if gold_3m > 0.10: s += 15; sub_ro = "geopolitical_shock"
+    if sp_dd < -0.15: s += 20
+    scores["risk_off"] = min(s, 100)
+
+    # --- trend_down ---
+    s = 0
+    sub_td = "correction"
+    if sp_sma200 and sp_now < sp_sma200: s += 30
+    if sp_sma50 and sp_sma200 and sp_sma50 < sp_sma200: s += 25
+    if vix_now > 25: s += 15
+    if sp_dd < -0.20: s += 20; sub_td = "bear_market"
+    elif sp_dd < -0.10: s += 10
+    if sp_rsi_ and sp_rsi_ < 35: s += 10
+    scores["trend_down"] = min(s, 100)
+
+    # --- inflation ---
+    s = 0
+    sub_inf = "rate_hike_cycle"
+    if oil_3m > 0.30 and gold_3m > 0.15: s += 40; sub_inf = "stagflation"
+    elif oil_3m > 0.20: s += 25
+    if gold_3m > 0.10: s += 15
+    if tnx_v and tnx_v[-1] > 4.5: s += 20
+    if len(cpi_v) >= 13:
+        cpi_yoy = (cpi_v[-1] - cpi_v[-13]) / cpi_v[-13] if cpi_v[-13] else 0
+        if cpi_yoy > 0.04: s += 30
+        elif cpi_yoy > 0.03: s += 15
+    scores["inflation"] = min(s, 100)
+
+    # --- trend_up ---
+    s = 0
+    sub_tu = "strong_bull"
+    if sp_sma50 and sp_sma200 and sp_now > sp_sma50 > sp_sma200: s += 35
+    elif sp_sma200 and sp_now > sp_sma200: s += 20
+    if vix_now < 20: s += 20
+    elif vix_now < 25: s += 10
+    if sp_rsi_ and sp_rsi_ > 55: s += 15
+    if sp_dd > -0.05: s += 15
+    # golden cross 検出
+    if sp_sma50 and sp_sma200 and sp_sma50 > sp_sma200:
+        prev50 = _sma(sp_v[:-5], 50) if len(sp_v) > 55 else None
+        prev200 = _sma(sp_v[:-5], 200) if len(sp_v) > 205 else None
+        if prev50 and prev200 and prev50 < prev200:
+            s += 15; sub_tu = "early_recovery"
+    scores["trend_up"] = min(s, 100)
+
+    # --- range_bound ---
+    s = 30
+    if 15 <= vix_now <= 25: s += 20
+    if sp_sma50 and sp_sma50 > 0 and abs(sp_now - sp_sma50) / sp_sma50 < 0.03: s += 20
+    if sp_rsi_ and 40 <= sp_rsi_ <= 60: s += 15
+    scores["range_bound"] = min(s, 100)
+
+    regime = max(scores, key=scores.get)
+    confidence = scores[regime]
+    sub_map = {"risk_off": sub_ro, "trend_down": sub_td, "inflation": sub_inf,
+               "trend_up": sub_tu, "range_bound": "consolidation"}
+
+    sorted_s = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    if len(sorted_s) >= 2 and sorted_s[0][1] - sorted_s[1][1] < 10:
+        details["transitional"] = True
+        details["second_regime"] = sorted_s[1][0]
+
+    sp_trend = "above_200sma" if (sp_sma200 and sp_now > sp_sma200) else "below_200sma"
+    sub = sub_map.get(regime, "")
+    return {
+        "regime": regime, "sub_regime": sub,
+        "regime_ja": REGIME_LABELS.get(regime, regime),
+        "sub_regime_ja": REGIME_SUB_LABELS.get(sub, ""),
+        "confidence": confidence, "vix_level": round(vix_now, 1),
+        "yield_spread": round(yield_spread, 2), "sp500_trend": sp_trend,
+        "scores": {k: round(v, 1) for k, v in scores.items()}, "details": details,
+    }
+
+
+# --------------- 銘柄シグナル検出 ---------------
+
+def _detect_stock_signals() -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT ticker,company_name,sector,price,hi52,lo52,"
+            "momentum_score,takehara_score FROM us_stocks "
+            "WHERE price IS NOT NULL AND hi52 IS NOT NULL ORDER BY takehara_score DESC LIMIT 200"
+        ).fetchall()
+    signals = []
+    for r in rows:
+        p, h52, l52 = r["price"], r["hi52"], r["lo52"]
+        if not p or not h52 or not l52 or h52 == 0:
+            continue
+        sigs = []
+        if p / h52 > 0.97:
+            sigs.append({"type": "52w_high", "label": "52週高値ブレイク",
+                         "detail": f"高値まで{round((p/h52-1)*100,1)}%"})
+        if l52 > 0 and p / l52 < 1.05:
+            sigs.append({"type": "52w_low", "label": "52週安値付近",
+                         "detail": f"安値から+{round((p/l52-1)*100,1)}%"})
+        rng = h52 - l52
+        if rng > 0:
+            pos = (p - l52) / rng
+            if pos > 0.90:
+                sigs.append({"type": "range_top", "label": "レンジ上限",
+                             "detail": f"52週レンジ{round(pos*100)}%位置"})
+            elif pos < 0.10:
+                sigs.append({"type": "range_bottom", "label": "レンジ下限",
+                             "detail": f"52週レンジ{round(pos*100)}%位置"})
+        if sigs:
+            signals.append({
+                "ticker": r["ticker"], "company_name": r["company_name"],
+                "sector": r["sector"], "price": p, "hi52": h52, "lo52": l52,
+                "momentum_score": r["momentum_score"],
+                "takehara_score": r["takehara_score"], "signals": sigs,
+            })
+    return signals
+
+
+# --------------- 戦略エンジン ---------------
+
+STRATEGY_DEFS = {
+    "all_weather": {
+        "proxy": {"stocks": "^GSPC", "bonds_long": "TLT", "bonds_mid": "IEF",
+                  "gold": "GC=F", "commodities": "CL=F"},
+        "default": {"stocks": .30, "bonds_long": .40, "bonds_mid": .15, "gold": .075, "commodities": .075},
+        "adjust": {
+            "risk_off": {"stocks": .15, "bonds_long": .45, "bonds_mid": .15, "gold": .15, "commodities": .10},
+            "inflation": {"stocks": .25, "bonds_long": .25, "bonds_mid": .10, "gold": .15, "commodities": .25},
+        },
+    },
+    "buffett_value": {
+        "proxy": {"stocks": "^GSPC"},
+        "default": {"stocks": 1.0}, "adjust": {},
+    },
+    "ark_growth": {
+        "proxy": {"stocks": "^GSPC"},
+        "default": {"stocks": 1.0},
+        "adjust": {"risk_off": {"stocks": .3, "cash": .7}, "trend_down": {"stocks": .5, "cash": .5}},
+    },
+    "soros_macro": {
+        "proxy": {"stocks": "^GSPC", "gold": "GC=F", "bonds_long": "TLT", "commodities": "CL=F"},
+        "default": {"stocks": .40, "gold": .20, "bonds_long": .20, "cash": .20},
+        "adjust": {
+            "risk_off": {"stocks": .0, "gold": .40, "bonds_long": .30, "cash": .30},
+            "trend_up": {"stocks": .70, "gold": .10, "bonds_long": .10, "cash": .10},
+            "inflation": {"stocks": .20, "gold": .30, "commodities": .30, "cash": .20},
+        },
+    },
+    "trend_following": {
+        "proxy": {"stocks": "^GSPC", "bonds_long": "TLT", "gold": "GC=F"},
+        "default": {"stocks": .60, "bonds_long": .20, "gold": .20},
+        "adjust": {
+            "trend_down": {"stocks": .0, "bonds_long": .40, "gold": .30, "cash": .30},
+            "risk_off": {"stocks": .0, "bonds_long": .30, "gold": .40, "cash": .30},
+        },
+    },
+}
+
+
+def _get_strategy_picks(strategy_id: str) -> list[dict]:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT stock_criteria FROM strategy_models WHERE strategy_id=?", (strategy_id,)
+        ).fetchone()
+    if not row or not row["stock_criteria"]:
+        return []
+    c = json.loads(row["stock_criteria"])
+    conds = ["price IS NOT NULL"]
+    params: list = []
+    if c.get("roe_min"):
+        conds.append("roe>=?"); params.append(c["roe_min"])
+    if c.get("per_max"):
+        conds.append("per>0 AND per<=?"); params.append(c["per_max"])
+    if c.get("operating_margin_min"):
+        conds.append("operating_margin>=?"); params.append(c["operating_margin_min"])
+    if c.get("fcf_positive"):
+        conds.append("fcf>0")
+    if c.get("revenue_growth_min"):
+        conds.append("revenue_growth>=?"); params.append(c["revenue_growth_min"])
+    if c.get("sector_prefer"):
+        ph = ",".join("?" * len(c["sector_prefer"]))
+        conds.append(f"sector IN ({ph})"); params.extend(c["sector_prefer"])
+    sort = c.get("sort_by", "takehara_score")
+    lim = c.get("limit", 15)
+    where = " AND ".join(conds)
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT ticker,company_name,sector,price,per,roe,operating_margin,"
+            f"dividend_yield,revenue_growth,value_score,quality_score,momentum_score,"
+            f"dividend_score,stability_score,takehara_score,target_per15 "
+            f"FROM us_stocks WHERE {where} ORDER BY {sort} DESC LIMIT ?",
+            params + [lim]).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --------------- バックテストエンジン ---------------
+
+def _run_backtest(strategy_id: str):
+    import yfinance as yf
+    sd = STRATEGY_DEFS.get(strategy_id)
+    if not sd:
+        return
+    tickers = set(sd["proxy"].values()) | {"^GSPC", "^VIX", "^TNX", "^FVX", "GC=F", "CL=F"}
+    price_data: dict[str, dict[str, float]] = {}
+    for t in tickers:
+        try:
+            h = yf.Ticker(t).history(period="10y", interval="1mo")
+            if not h.empty:
+                price_data[t] = {idx.strftime("%Y-%m-01"): float(row["Close"])
+                                 for idx, row in h.iterrows()}
+        except Exception as e:
+            print(f"[REGIME-BG] BT fetch {t}: {e}")
+        from time import sleep as _sl
+        _sl(0.5)
+    if "^GSPC" not in price_data:
+        return
+    months = sorted(set().union(*(d.keys() for d in price_data.values())))
+    if len(months) < 12:
+        return
+    results = []
+    cum = 1.0; sp_cum = 1.0; peak = 1.0
+    for i in range(1, len(months)):
+        m, pm = months[i], months[i - 1]
+        # 簡易レジーム判定
+        vix_val = price_data.get("^VIX", {}).get(pm, 20)
+        regime = "range_bound"
+        if vix_val > 30:
+            regime = "risk_off"
+        elif vix_val > 25:
+            sp6 = price_data.get("^GSPC", {}).get(months[max(0, i - 6)], 0)
+            sp_pm = price_data.get("^GSPC", {}).get(pm, 0)
+            if sp6 and sp_pm < sp6 * 0.9:
+                regime = "trend_down"
+        elif vix_val < 20:
+            sp6 = price_data.get("^GSPC", {}).get(months[max(0, i - 6)], 0)
+            sp_pm = price_data.get("^GSPC", {}).get(pm, 0)
+            if sp6 and sp_pm > sp6 * 1.05:
+                regime = "trend_up"
+        alloc = dict(sd["default"])
+        if regime in sd.get("adjust", {}):
+            alloc = dict(sd["adjust"][regime])
+        strat_ret = 0.0
+        for ac, w in alloc.items():
+            if ac == "cash":
+                strat_ret += w * 0.0003; continue
+            proxy = sd["proxy"].get(ac)
+            if not proxy or proxy not in price_data:
+                continue
+            cur = price_data[proxy].get(m)
+            prev = price_data[proxy].get(pm)
+            if cur and prev and prev > 0:
+                strat_ret += w * ((cur - prev) / prev)
+        sp_c = price_data["^GSPC"].get(m)
+        sp_p = price_data["^GSPC"].get(pm)
+        sp_ret = ((sp_c - sp_p) / sp_p) if sp_c and sp_p and sp_p > 0 else 0
+        cum *= (1 + strat_ret); sp_cum *= (1 + sp_ret)
+        peak = max(peak, cum)
+        dd = (cum - peak) / peak
+        results.append({"date": m, "regime": regime,
+                        "monthly_return": round(strat_ret, 6),
+                        "cumulative_return": round(cum - 1, 6),
+                        "sp500_return": round(sp_ret, 6),
+                        "sp500_cumulative": round(sp_cum - 1, 6),
+                        "drawdown": round(dd, 6),
+                        "allocation_snapshot": json.dumps(alloc)})
+    with get_db(readonly=False) as conn:
+        conn.execute("DELETE FROM backtest_results WHERE strategy_id=?", (strategy_id,))
+        for r in results:
+            conn.execute(
+                "INSERT INTO backtest_results "
+                "(strategy_id,date,regime,monthly_return,cumulative_return,"
+                "sp500_return,sp500_cumulative,drawdown,allocation_snapshot) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (strategy_id, r["date"], r["regime"], r["monthly_return"],
+                 r["cumulative_return"], r["sp500_return"], r["sp500_cumulative"],
+                 r["drawdown"], r["allocation_snapshot"]))
+        conn.commit()
+    print(f"[REGIME-BG] Backtest {strategy_id}: {len(results)} months")
+
+
+# --------------- レジームBGスレッド ---------------
+
+_regime_update_running = False
+_regime_last_updated: str | None = None
+_regime_last_backtest: str | None = None
+
+
+def _update_regime_data():
+    global _regime_update_running, _regime_last_updated, _regime_last_backtest
+    if _regime_update_running:
+        return
+    _regime_update_running = True
+    try:
+        print("[REGIME-BG] Starting macro data update...")
+        from time import sleep as _sl
+        all_ind: dict[str, list[dict]] = {}
+        for key in MACRO_TICKERS:
+            data = _fetch_macro_history_yf(key, "1y")
+            if data:
+                all_ind[key] = data
+                print(f"[REGIME-BG] {key}: {len(data)} days")
+            _sl(1)
+        fred_key = os.getenv("FRED_API_KEY")
+        if fred_key:
+            for key, sid in FRED_SERIES.items():
+                data = _fetch_fred_series(sid)
+                if data:
+                    all_ind[key] = data
+                    print(f"[REGIME-BG] FRED {key}: {len(data)} pts")
+        if all_ind:
+            _store_macro_indicators(all_ind)
+            print(f"[REGIME-BG] Stored {len(all_ind)} indicators")
+        regime_res = _detect_market_regime()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with get_db(readonly=False) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO market_regimes "
+                "(date,regime,sub_regime,vix_level,yield_spread,sp500_trend,"
+                "confidence,details,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (today, regime_res["regime"], regime_res.get("sub_regime"),
+                 regime_res.get("vix_level"), regime_res.get("yield_spread"),
+                 regime_res.get("sp500_trend"), regime_res.get("confidence"),
+                 json.dumps(regime_res.get("details", {})),
+                 datetime.now(timezone.utc).isoformat()))
+            conn.commit()
+        print(f"[REGIME-BG] Regime: {regime_res['regime']} (conf={regime_res['confidence']})")
+        should_bt = True
+        if _regime_last_backtest:
+            try:
+                last = datetime.fromisoformat(_regime_last_backtest)
+                if (datetime.now(timezone.utc) - last).days < 7:
+                    should_bt = False
+            except Exception:
+                pass
+        if should_bt:
+            print("[REGIME-BG] Running backtests...")
+            for sid in STRATEGY_DEFS:
+                try:
+                    _run_backtest(sid)
+                except Exception as e:
+                    print(f"[REGIME-BG] BT {sid} fail: {e}")
+            _regime_last_backtest = datetime.now(timezone.utc).isoformat()
+        _regime_last_updated = datetime.now(timezone.utc).isoformat()
+        print(f"[REGIME-BG] Done at {_regime_last_updated}")
+    except Exception as e:
+        print(f"[REGIME-BG] Update failed: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        _regime_update_running = False
+
+
+def _regime_bg_scheduler():
+    from time import sleep as _sl
+    _sl(60)
+    while True:
+        try:
+            _update_regime_data()
+        except Exception as e:
+            print(f"[REGIME-BG] Sched err: {e}")
+        _sl(6 * 3600)
+
+
+_regime_bg_thread = threading.Thread(target=_regime_bg_scheduler, daemon=True, name="regime-updater")
+_regime_bg_thread.start()
+
+
+# --------------- レジームAPI ---------------
+
+@app.get("/api/regime/status")
+def regime_status():
+    with get_db() as conn:
+        cnt = conn.execute("SELECT COUNT(DISTINCT indicator) FROM macro_indicators").fetchone()[0]
+        rcnt = conn.execute("SELECT COUNT(*) FROM market_regimes").fetchone()[0]
+    return {"updating": _regime_update_running, "last_updated": _regime_last_updated,
+            "indicator_count": cnt, "regime_count": rcnt}
+
+
+@app.get("/api/regime/dashboard")
+def regime_dashboard(request: Request):
+    _get_current_user(request)
+    with get_db() as conn:
+        rrow = conn.execute("SELECT * FROM market_regimes ORDER BY date DESC LIMIT 1").fetchone()
+    cur_regime = None
+    if rrow:
+        cur_regime = {
+            "date": rrow["date"], "regime": rrow["regime"],
+            "regime_ja": REGIME_LABELS.get(rrow["regime"], rrow["regime"]),
+            "sub_regime": rrow["sub_regime"],
+            "sub_regime_ja": REGIME_SUB_LABELS.get(rrow["sub_regime"], rrow["sub_regime"] or ""),
+            "vix_level": rrow["vix_level"], "yield_spread": rrow["yield_spread"],
+            "sp500_trend": rrow["sp500_trend"], "confidence": rrow["confidence"],
+            "details": json.loads(rrow["details"]) if rrow["details"] else {},
+        }
+    indicators = {}
+    for key in ["vix", "tnx", "gold", "oil", "usd_index", "sp500"]:
+        hist = _get_macro_history(key, 60)
+        if hist:
+            v = hist[-1]["value"]
+            indicators[key] = {
+                "current": v, "date": hist[-1]["date"],
+                "sparkline": [h["value"] for h in hist[-30:]],
+                "change_1d": round((v - hist[-2]["value"]) / hist[-2]["value"] * 100, 2) if len(hist) >= 2 and hist[-2]["value"] else None,
+                "change_1w": round((v - hist[-6]["value"]) / hist[-6]["value"] * 100, 2) if len(hist) >= 6 and hist[-6]["value"] else None,
+            }
+    recommended = []
+    if cur_regime:
+        rn = cur_regime["regime"]
+        with get_db() as conn:
+            srows = conn.execute("SELECT * FROM strategy_models").fetchall()
+        for sr in srows:
+            pref = json.loads(sr["preferred_regimes"]) if sr["preferred_regimes"] else []
+            avoid = json.loads(sr["avoid_regimes"]) if sr["avoid_regimes"] else []
+            recommended.append({
+                "strategy_id": sr["strategy_id"], "name_ja": sr["name_ja"],
+                "description_ja": sr["description_ja"],
+                "allocation": json.loads(sr["allocation"]) if sr["allocation"] else {},
+                "is_recommended": rn in pref, "is_avoid": rn in avoid,
+                "rebalance_frequency": sr["rebalance_frequency"],
+            })
+        recommended.sort(key=lambda x: (not x["is_recommended"], x["is_avoid"]))
+    return {"regime": cur_regime, "indicators": indicators,
+            "strategies": recommended, "updated_at": _regime_last_updated,
+            "updating": _regime_update_running}
+
+
+@app.get("/api/regime/indicators")
+def regime_indicators_api(request: Request, indicator: str = None, limit: int = 250):
+    _get_current_user(request)
+    if indicator:
+        return {"indicator": indicator, "data": _get_macro_history(indicator, limit)}
+    result = {}
+    for key in MACRO_TICKERS:
+        d = _get_macro_history(key, limit)
+        if d:
+            result[key] = d
+    return {"indicators": result}
+
+
+@app.get("/api/regime/history")
+def regime_history_api(request: Request, limit: int = 365):
+    _get_current_user(request)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT date,regime,sub_regime,vix_level,yield_spread,confidence,details "
+            "FROM market_regimes ORDER BY date DESC LIMIT ?", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        out.append({"date": r["date"], "regime": r["regime"],
+                     "regime_ja": REGIME_LABELS.get(r["regime"], r["regime"]),
+                     "sub_regime": r["sub_regime"],
+                     "sub_regime_ja": REGIME_SUB_LABELS.get(r["sub_regime"], r["sub_regime"] or ""),
+                     "vix_level": r["vix_level"], "yield_spread": r["yield_spread"],
+                     "confidence": r["confidence"],
+                     "details": json.loads(r["details"]) if r["details"] else {}})
+    return {"regimes": list(reversed(out))}
+
+
+@app.get("/api/regime/strategies")
+def regime_strategies_api(request: Request):
+    _get_current_user(request)
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM strategy_models").fetchall()
+        rr = conn.execute("SELECT regime FROM market_regimes ORDER BY date DESC LIMIT 1").fetchone()
+    cr = rr["regime"] if rr else "range_bound"
+    out = []
+    for r in rows:
+        pref = json.loads(r["preferred_regimes"]) if r["preferred_regimes"] else []
+        avoid = json.loads(r["avoid_regimes"]) if r["avoid_regimes"] else []
+        out.append({
+            "strategy_id": r["strategy_id"], "name_ja": r["name_ja"],
+            "description_ja": r["description_ja"],
+            "allocation": json.loads(r["allocation"]) if r["allocation"] else {},
+            "stock_criteria": json.loads(r["stock_criteria"]) if r["stock_criteria"] else None,
+            "preferred_regimes": pref, "avoid_regimes": avoid,
+            "is_recommended": cr in pref, "is_avoid": cr in avoid,
+            "rebalance_frequency": r["rebalance_frequency"],
+        })
+    return {"strategies": out, "current_regime": cr}
+
+
+@app.get("/api/regime/strategy/{strategy_id}")
+def regime_strategy_detail(strategy_id: str, request: Request):
+    _get_current_user(request)
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM strategy_models WHERE strategy_id=?", (strategy_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    picks = _get_strategy_picks(strategy_id)
+    with get_db() as conn:
+        rr = conn.execute("SELECT regime FROM market_regimes ORDER BY date DESC LIMIT 1").fetchone()
+    cr = rr["regime"] if rr else "range_bound"
+    sd = STRATEGY_DEFS.get(strategy_id, {})
+    alloc = dict(sd.get("default", {}))
+    if cr in sd.get("adjust", {}):
+        alloc = dict(sd["adjust"][cr])
+    return {
+        "strategy_id": row["strategy_id"], "name_ja": row["name_ja"],
+        "description_ja": row["description_ja"],
+        "base_allocation": json.loads(row["allocation"]) if row["allocation"] else {},
+        "current_allocation": {k: round(v * 100, 1) for k, v in alloc.items()},
+        "current_regime": cr, "picks": picks,
+        "preferred_regimes": json.loads(row["preferred_regimes"]) if row["preferred_regimes"] else [],
+        "avoid_regimes": json.loads(row["avoid_regimes"]) if row["avoid_regimes"] else [],
+    }
+
+
+@app.get("/api/regime/backtest/{strategy_id}")
+def regime_backtest_api(strategy_id: str, request: Request):
+    _get_current_user(request)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM backtest_results WHERE strategy_id=? ORDER BY date",
+            (strategy_id,)).fetchall()
+    if not rows:
+        return {"strategy_id": strategy_id, "results": [], "summary": None}
+    results = [dict(r) for r in rows]
+    rets = [r["monthly_return"] for r in results if r["monthly_return"] is not None]
+    cum_r = results[-1]["cumulative_return"] or 0
+    sp_cum = results[-1]["sp500_cumulative"] or 0
+    max_dd = min((r["drawdown"] for r in results if r["drawdown"] is not None), default=0)
+    yrs = len(results) / 12
+    ann = ((1 + cum_r) ** (1 / yrs) - 1) if yrs > 0 else 0
+    sp_ann = ((1 + sp_cum) ** (1 / yrs) - 1) if yrs > 0 else 0
+    if len(rets) > 1:
+        mean_r = sum(rets) / len(rets)
+        var_ = sum((r - mean_r) ** 2 for r in rets) / (len(rets) - 1)
+        vol = (var_ ** 0.5) * (12 ** 0.5)
+        sharpe = (ann - 0.04) / vol if vol > 0 else 0
+    else:
+        vol = 0; sharpe = 0
+    regime_perf: dict[str, dict] = {}
+    for r in results:
+        rg = r["regime"] or "unknown"
+        if rg not in regime_perf:
+            regime_perf[rg] = {"months": 0, "total_return": 0}
+        regime_perf[rg]["months"] += 1
+        regime_perf[rg]["total_return"] += r["monthly_return"] or 0
+    for rg in regime_perf:
+        m = regime_perf[rg]["months"]
+        regime_perf[rg]["avg_monthly"] = round(regime_perf[rg]["total_return"] / m * 100, 2) if m else 0
+    return {"strategy_id": strategy_id, "results": results,
+            "summary": {"total_return": round(cum_r * 100, 1),
+                        "sp500_return": round(sp_cum * 100, 1),
+                        "annualized_return": round(ann * 100, 1),
+                        "sp500_annualized": round(sp_ann * 100, 1),
+                        "max_drawdown": round(max_dd * 100, 1),
+                        "volatility": round(vol * 100, 1),
+                        "sharpe_ratio": round(sharpe, 2),
+                        "months": len(results),
+                        "regime_breakdown": regime_perf}}
+
+
+@app.get("/api/regime/breakouts")
+def regime_breakouts_api(request: Request):
+    _get_current_user(request)
+    signals = _detect_stock_signals()
+    return {"breakouts": signals, "count": len(signals)}
+
+
 # --------------- 静的ファイル配信 (本番: Dockerコンテナ用) ---------------
 
 _static_dir = Path(__file__).parent.parent / "static"

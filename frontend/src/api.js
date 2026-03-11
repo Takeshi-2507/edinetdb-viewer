@@ -113,6 +113,15 @@ export const api = {
   // 米国株
   usScreener: (p) => get('/us-screener', p),
   usScreenerStatus: () => get('/us-screener/status'),
+  // マーケットレジーム
+  regimeDashboard: () => get('/regime/dashboard'),
+  regimeIndicators: (p) => get('/regime/indicators', p),
+  regimeHistory: () => get('/regime/history'),
+  regimeStrategies: () => get('/regime/strategies'),
+  regimeStrategy: (id) => get(`/regime/strategy/${id}`),
+  regimeBacktest: (id) => get(`/regime/backtest/${id}`),
+  regimeBreakouts: () => get('/regime/breakouts'),
+  regimeStatus: () => get('/regime/status'),
   // デモトレード（ユーザーごと）
   demoTrades: () => get('/demo-trades'),
   createTrade: (trade) => postJSON('/demo-trades', trade),

@@ -11,7 +11,12 @@ export function useFetch(fn, deps = []) {
     let cancelled = false
     setLoading(true)
     setError(null)
-    fnRef.current()
+    const result = fnRef.current()
+    if (!result || typeof result.then !== 'function') {
+      setLoading(false)
+      return () => { cancelled = true }
+    }
+    result
       .then(d => { if (!cancelled) setData(d) })
       .catch(e => { if (!cancelled) setError(e.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
