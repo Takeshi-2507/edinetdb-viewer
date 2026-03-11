@@ -2707,8 +2707,9 @@ def _update_us_stocks_batch():
     _us_update_running = True
     try:
         tickers = list(US_STOCK_UNIVERSE.keys())
-        batch_size = 10
+        batch_size = 5
         updated = 0
+        consecutive_fails = 0
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i + batch_size]
             for ticker in batch:
@@ -2732,11 +2733,21 @@ def _update_us_stocks_batch():
                         data["updated_at"] = datetime.now(timezone.utc).isoformat()
                         _upsert_us_stock(data)
                         updated += 1
+                        consecutive_fails = 0
+                    else:
+                        consecutive_fails += 1
                 except Exception as e:
                     print(f"[US-BG] {ticker}: {e}")
+                    consecutive_fails += 1
+                # Rate limit backoff
+                if consecutive_fails > 10:
+                    from time import sleep
+                    print(f"[US-BG] Too many fails, sleeping 30s...")
+                    sleep(30)
+                    consecutive_fails = 0
             if i + batch_size < len(tickers):
                 from time import sleep
-                sleep(2)
+                sleep(5)
         _us_last_updated = datetime.now(timezone.utc).isoformat()
         print(f"[US-BG] Updated {updated}/{len(tickers)} tickers at {_us_last_updated}")
     except Exception as e:
