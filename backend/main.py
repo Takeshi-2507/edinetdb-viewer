@@ -9,6 +9,7 @@ import threading
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from datetime import datetime, timezone
 from time import time
 from typing import Any
 
@@ -1831,11 +1832,65 @@ def _ensure_indexes():
               ON companies(credit_score DESC, company_name);
             CREATE INDEX IF NOT EXISTS idx_companies_securities_code
               ON companies(securities_code);
+            CREATE INDEX IF NOT EXISTS idx_us_stocks_score
+              ON us_stocks(takehara_score DESC);
+            CREATE INDEX IF NOT EXISTS idx_us_stocks_sector
+              ON us_stocks(sector);
         """)
         conn.commit()
 
+def _ensure_us_stocks_table():
+    """us_stocks テーブルを確保 (米国株DB化)"""
+    with get_db(readonly=False) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS us_stocks (
+                ticker TEXT PRIMARY KEY,
+                company_name TEXT,
+                sector TEXT,
+                industry TEXT,
+                price REAL,
+                market_cap REAL,
+                per REAL,
+                pbr REAL,
+                roe REAL,
+                eps REAL,
+                bps REAL,
+                dividend REAL,
+                dividend_yield REAL,
+                revenue REAL,
+                net_income REAL,
+                operating_margin REAL,
+                profit_margin REAL,
+                gross_margins REAL,
+                cash_ratio REAL,
+                equity_ratio REAL,
+                fcf REAL,
+                revenue_growth REAL,
+                earnings_growth REAL,
+                total_debt REAL,
+                beta REAL,
+                debt_to_equity REAL,
+                current_ratio REAL,
+                payout_ratio REAL,
+                roa REAL,
+                hi52 REAL,
+                lo52 REAL,
+                value_score REAL,
+                quality_score REAL,
+                momentum_score REAL,
+                dividend_score REAL,
+                stability_score REAL,
+                takehara_score REAL,
+                target_per15 REAL,
+                updated_at TEXT
+            )
+        """)
+        conn.commit()
+
+
 try:
     _ensure_demo_trades_table()
+    _ensure_us_stocks_table()
     _ensure_indexes()
 except Exception:
     pass  # DB未作成の場合はスキップ
@@ -2149,19 +2204,94 @@ def get_alerts(request: Request) -> dict:
 
 # --------------- 米国株スクリーニング API ---------------
 
-# 米国株ユニバース (S&P500 主要 ~150銘柄)
+# 米国株ユニバース (S&P500 全銘柄)
 US_STOCK_UNIVERSE = {
-    # メガキャップテック
-    "AAPL": "Apple", "MSFT": "Microsoft", "GOOGL": "Alphabet", "AMZN": "Amazon",
-    "NVDA": "NVIDIA", "META": "Meta Platforms", "TSLA": "Tesla", "AVGO": "Broadcom",
+    # ── Information Technology ──
+    "AAPL": "Apple", "MSFT": "Microsoft", "NVDA": "NVIDIA", "AVGO": "Broadcom",
     "ORCL": "Oracle", "CRM": "Salesforce", "ADBE": "Adobe", "AMD": "AMD",
-    "INTC": "Intel", "CSCO": "Cisco", "QCOM": "Qualcomm", "TXN": "Texas Instruments",
-    "IBM": "IBM", "NFLX": "Netflix", "PYPL": "PayPal", "SHOP": "Shopify",
-    "NOW": "ServiceNow", "INTU": "Intuit", "AMAT": "Applied Materials",
+    "CSCO": "Cisco", "ACN": "Accenture", "INTC": "Intel", "IBM": "IBM",
+    "QCOM": "Qualcomm", "TXN": "Texas Instruments", "INTU": "Intuit",
+    "AMAT": "Applied Materials", "NOW": "ServiceNow", "PANW": "Palo Alto Networks",
     "MU": "Micron", "LRCX": "Lam Research", "KLAC": "KLA Corp",
-    "SNPS": "Synopsys", "CDNS": "Cadence Design", "PANW": "Palo Alto Networks",
+    "SNPS": "Synopsys", "CDNS": "Cadence Design", "ADI": "Analog Devices",
     "CRWD": "CrowdStrike", "FTNT": "Fortinet", "MRVL": "Marvell Technology",
-    # 金融
+    "MSI": "Motorola Solutions", "NXPI": "NXP Semiconductors", "ON": "ON Semiconductor",
+    "MPWR": "Monolithic Power", "KEYS": "Keysight Technologies",
+    "HPQ": "HP Inc", "HPE": "Hewlett Packard Enterprise",
+    "CTSH": "Cognizant", "IT": "Gartner", "ANSS": "Ansys",
+    "CDW": "CDW", "ZBRA": "Zebra Technologies", "GLW": "Corning",
+    "TYL": "Tyler Technologies", "TRMB": "Trimble",
+    "PTC": "PTC", "FSLR": "First Solar", "ENPH": "Enphase Energy",
+    "EPAM": "EPAM Systems", "VRSN": "VeriSign", "SWKS": "Skyworks Solutions",
+    "TER": "Teradyne", "AKAM": "Akamai Technologies", "JNPR": "Juniper Networks",
+    "FFIV": "F5", "GEN": "Gen Digital", "NTAP": "NetApp",
+    "WDC": "Western Digital", "STX": "Seagate Technology",
+    "QRVO": "Qorvo", "SEDG": "SolarEdge Technologies",
+    # ── Communication Services ──
+    "GOOGL": "Alphabet (A)", "GOOG": "Alphabet (C)", "META": "Meta Platforms",
+    "NFLX": "Netflix", "DIS": "Disney", "CMCSA": "Comcast",
+    "T": "AT&T", "VZ": "Verizon", "TMUS": "T-Mobile US",
+    "CHTR": "Charter Communications", "EA": "Electronic Arts",
+    "TTWO": "Take-Two Interactive", "WBD": "Warner Bros Discovery",
+    "OMC": "Omnicom Group", "IPG": "Interpublic Group",
+    "LYV": "Live Nation", "MTCH": "Match Group",
+    "NWSA": "News Corp (A)", "NWS": "News Corp (B)", "PARA": "Paramount Global",
+    "FOXA": "Fox Corp (A)", "FOX": "Fox Corp (B)",
+    # ── Consumer Discretionary ──
+    "AMZN": "Amazon", "TSLA": "Tesla", "HD": "Home Depot",
+    "MCD": "McDonald's", "NKE": "Nike", "LOW": "Lowe's",
+    "SBUX": "Starbucks", "TJX": "TJX Companies", "BKNG": "Booking Holdings",
+    "ABNB": "Airbnb", "ORLY": "O'Reilly Automotive", "AZO": "AutoZone",
+    "MAR": "Marriott International", "GM": "General Motors",
+    "F": "Ford Motor", "ROST": "Ross Stores", "CMG": "Chipotle Mexican Grill",
+    "HLT": "Hilton Worldwide", "DHI": "D.R. Horton", "LEN": "Lennar",
+    "YUM": "Yum! Brands", "DKNG": "DraftKings", "EXPE": "Expedia Group",
+    "EBAY": "eBay", "ULTA": "Ulta Beauty", "GPC": "Genuine Parts",
+    "POOL": "Pool Corp", "PHM": "PulteGroup", "NVR": "NVR",
+    "DPZ": "Domino's Pizza", "APTV": "Aptiv", "BWA": "BorgWarner",
+    "CZR": "Caesars Entertainment", "MGM": "MGM Resorts",
+    "BBY": "Best Buy", "GRMN": "Garmin", "TSCO": "Tractor Supply",
+    "DRI": "Darden Restaurants", "LKQ": "LKQ Corp",
+    "CCL": "Carnival Corp", "RCL": "Royal Caribbean",
+    "WYNN": "Wynn Resorts", "LVS": "Las Vegas Sands",
+    "TPR": "Tapestry", "RL": "Ralph Lauren", "HAS": "Hasbro",
+    "MHK": "Mohawk Industries", "WHR": "Whirlpool",
+    "NCLH": "Norwegian Cruise Line",
+    # ── Consumer Staples ──
+    "PG": "Procter & Gamble", "KO": "Coca-Cola", "PEP": "PepsiCo",
+    "COST": "Costco", "WMT": "Walmart", "PM": "Philip Morris",
+    "MO": "Altria", "MDLZ": "Mondelez", "CL": "Colgate-Palmolive",
+    "KMB": "Kimberly-Clark", "GIS": "General Mills", "HSY": "Hershey",
+    "SYY": "Sysco", "ADM": "Archer-Daniels-Midland",
+    "STZ": "Constellation Brands", "KHC": "Kraft Heinz",
+    "KR": "Kroger", "WBA": "Walgreens Boots Alliance",
+    "EL": "Estee Lauder", "MNST": "Monster Beverage",
+    "MKC": "McCormick", "K": "Kellanova", "CHD": "Church & Dwight",
+    "SJM": "J.M. Smucker", "TSN": "Tyson Foods", "TAP": "Molson Coors",
+    "CAG": "Conagra Brands", "BG": "Bunge", "HRL": "Hormel Foods",
+    "CPB": "Campbell Soup", "CLX": "Clorox", "LW": "Lamb Weston",
+    "BF-B": "Brown-Forman",
+    # ── Health Care ──
+    "UNH": "UnitedHealth", "JNJ": "Johnson & Johnson", "LLY": "Eli Lilly",
+    "ABBV": "AbbVie", "MRK": "Merck", "PFE": "Pfizer",
+    "TMO": "Thermo Fisher", "ABT": "Abbott Laboratories", "DHR": "Danaher",
+    "BMY": "Bristol-Myers Squibb", "AMGN": "Amgen", "GILD": "Gilead Sciences",
+    "MDT": "Medtronic", "ELV": "Elevance Health", "ISRG": "Intuitive Surgical",
+    "CVS": "CVS Health", "CI": "Cigna Group", "VRTX": "Vertex Pharmaceuticals",
+    "SYK": "Stryker", "BSX": "Boston Scientific", "REGN": "Regeneron",
+    "ZTS": "Zoetis", "HCA": "HCA Healthcare", "BDX": "Becton Dickinson",
+    "MCK": "McKesson", "EW": "Edwards Lifesciences", "IDXX": "IDEXX Laboratories",
+    "A": "Agilent Technologies", "IQV": "IQVIA", "RMD": "ResMed",
+    "MTD": "Mettler-Toledo", "DXCM": "DexCom", "BAX": "Baxter International",
+    "GEHC": "GE HealthCare", "BIIB": "Biogen", "MOH": "Molina Healthcare",
+    "CNC": "Centene", "HUM": "Humana", "HOLX": "Hologic",
+    "ALGN": "Align Technology", "PODD": "Insulet",
+    "TECH": "Bio-Techne", "INCY": "Incyte",
+    "VTRS": "Viatris", "CRL": "Charles River Laboratories",
+    "DGX": "Quest Diagnostics", "LH": "Labcorp",
+    "HSIC": "Henry Schein", "XRAY": "Dentsply Sirona",
+    "OGN": "Organon", "DVA": "DaVita",
+    # ── Financials ──
     "BRK-B": "Berkshire Hathaway", "JPM": "JPMorgan Chase", "V": "Visa",
     "MA": "Mastercard", "BAC": "Bank of America", "WFC": "Wells Fargo",
     "GS": "Goldman Sachs", "MS": "Morgan Stanley", "AXP": "American Express",
@@ -2169,59 +2299,115 @@ US_STOCK_UNIVERSE = {
     "USB": "U.S. Bancorp", "PNC": "PNC Financial", "TFC": "Truist Financial",
     "AIG": "AIG", "MET": "MetLife", "PRU": "Prudential Financial",
     "ICE": "Intercontinental Exchange", "CME": "CME Group",
-    # ヘルスケア
-    "JNJ": "Johnson & Johnson", "UNH": "UnitedHealth", "PFE": "Pfizer",
-    "MRK": "Merck", "ABBV": "AbbVie", "LLY": "Eli Lilly", "TMO": "Thermo Fisher",
-    "ABT": "Abbott Labs", "BMY": "Bristol-Myers Squibb", "AMGN": "Amgen",
-    "GILD": "Gilead Sciences", "ISRG": "Intuitive Surgical", "VRTX": "Vertex Pharma",
-    "REGN": "Regeneron", "MDT": "Medtronic", "SYK": "Stryker",
-    "DHR": "Danaher", "BDX": "Becton Dickinson", "ZTS": "Zoetis",
-    "CI": "Cigna", "ELV": "Elevance Health", "HUM": "Humana",
-    # 消費財・小売
-    "WMT": "Walmart", "PG": "Procter & Gamble", "KO": "Coca-Cola",
-    "PEP": "PepsiCo", "COST": "Costco", "MCD": "McDonald's",
-    "NKE": "Nike", "SBUX": "Starbucks", "HD": "Home Depot", "LOW": "Lowe's",
-    "TGT": "Target", "CL": "Colgate-Palmolive", "MDLZ": "Mondelez",
-    "KHC": "Kraft Heinz", "GIS": "General Mills", "K": "Kellanova",
-    "EL": "Estee Lauder", "MO": "Altria", "PM": "Philip Morris",
-    "TJX": "TJX Companies", "ROST": "Ross Stores",
-    # 工業・エネルギー
-    "XOM": "Exxon Mobil", "CVX": "Chevron", "CAT": "Caterpillar",
-    "BA": "Boeing", "GE": "GE Aerospace", "HON": "Honeywell",
-    "UNP": "Union Pacific", "RTX": "RTX Corp", "DE": "Deere & Co",
-    "LMT": "Lockheed Martin", "MMM": "3M", "EMR": "Emerson Electric",
-    "ETN": "Eaton Corp", "ITW": "Illinois Tool Works", "WM": "Waste Management",
-    "GD": "General Dynamics", "NOC": "Northrop Grumman",
-    "COP": "ConocoPhillips", "SLB": "Schlumberger", "EOG": "EOG Resources",
+    "SPGI": "S&P Global", "MCO": "Moody's", "MMC": "Marsh & McLennan",
+    "AON": "Aon", "CB": "Chubb", "AFL": "Aflac",
+    "AJG": "Arthur J. Gallagher", "TRV": "Travelers",
+    "ALL": "Allstate", "PGR": "Progressive", "MSCI": "MSCI",
+    "FIS": "Fidelity National Info", "FITB": "Fifth Third Bancorp",
+    "MTB": "M&T Bank", "HBAN": "Huntington Bancshares",
+    "CFG": "Citizens Financial", "RF": "Regions Financial",
+    "KEY": "KeyCorp", "NTRS": "Northern Trust",
+    "STT": "State Street", "BK": "Bank of New York Mellon",
+    "CINF": "Cincinnati Financial", "RE": "Everest Group",
+    "L": "Loews", "TROW": "T. Rowe Price", "IVZ": "Invesco",
+    "BEN": "Franklin Resources", "RJF": "Raymond James",
+    "NDAQ": "Nasdaq", "CBOE": "Cboe Global Markets",
+    "FRC": "First Republic Bank", "SIVB": "SVB Financial",
+    "WRB": "W. R. Berkley", "GL": "Globe Life",
+    "MKTX": "MarketAxess", "ZION": "Zions Bancorp",
+    "CMA": "Comerica", "DFS": "Discover Financial",
+    "SYF": "Synchrony Financial", "COF": "Capital One",
+    "PYPL": "PayPal",
+    # ── Industrials ──
+    "CAT": "Caterpillar", "GE": "GE Aerospace", "HON": "Honeywell",
+    "UNP": "Union Pacific", "RTX": "RTX Corp", "BA": "Boeing",
+    "DE": "Deere & Co", "LMT": "Lockheed Martin", "UPS": "UPS",
+    "ETN": "Eaton Corp", "ITW": "Illinois Tool Works",
+    "EMR": "Emerson Electric", "GD": "General Dynamics",
+    "NOC": "Northrop Grumman", "WM": "Waste Management",
+    "CSX": "CSX", "NSC": "Norfolk Southern",
+    "FDX": "FedEx", "MMM": "3M", "JCI": "Johnson Controls",
+    "TT": "Trane Technologies", "PCAR": "PACCAR",
+    "PH": "Parker-Hannifin", "CARR": "Carrier Global",
+    "OTIS": "Otis Worldwide", "AME": "AMETEK",
+    "RSG": "Republic Services", "CTAS": "Cintas",
+    "FAST": "Fastenal", "VRSK": "Verisk Analytics",
+    "PWR": "Quanta Services", "IR": "Ingersoll Rand",
+    "XYL": "Xylem", "DOV": "Dover",
+    "WAB": "Westinghouse Air Brake", "GWW": "W.W. Grainger",
+    "ROK": "Rockwell Automation", "SWK": "Stanley Black & Decker",
+    "HWM": "Howmet Aerospace", "IEX": "IDEX",
+    "TDG": "TransDigm", "AXON": "Axon Enterprise",
+    "HII": "Huntington Ingalls", "LHX": "L3Harris Technologies",
+    "LDOS": "Leidos", "J": "Jacobs Solutions",
+    "URI": "United Rentals", "RHI": "Robert Half",
+    "MAS": "Masco", "AOS": "A.O. Smith",
+    "NDSN": "Nordson", "DAL": "Delta Air Lines",
+    "UAL": "United Airlines", "LUV": "Southwest Airlines",
+    "AAL": "American Airlines", "PAYC": "Paycom",
+    "PAYX": "Paychex", "EXPD": "Expeditors International",
+    "CHRW": "C.H. Robinson", "CPRT": "Copart",
+    "EFX": "Equifax", "BR": "Broadridge Financial",
+    "JBHT": "J.B. Hunt Transport",
+    # ── Energy ──
+    "XOM": "Exxon Mobil", "CVX": "Chevron", "COP": "ConocoPhillips",
+    "SLB": "Schlumberger", "EOG": "EOG Resources",
     "PSX": "Phillips 66", "VLO": "Valero Energy",
-    "FDX": "FedEx", "UPS": "UPS",
-    # 通信・メディア
-    "DIS": "Disney", "CMCSA": "Comcast", "T": "AT&T", "VZ": "Verizon",
-    "TMUS": "T-Mobile US", "CHTR": "Charter Communications",
-    # 不動産・公益
-    "NEE": "NextEra Energy", "SO": "Southern Co", "DUK": "Duke Energy",
-    "AMT": "American Tower", "PLD": "Prologis", "D": "Dominion Energy",
-    "AEP": "American Electric Power", "EXC": "Exelon", "SRE": "Sempra Energy",
-    "SPG": "Simon Property Group", "O": "Realty Income",
-    # 素材
+    "MPC": "Marathon Petroleum", "PXD": "Pioneer Natural Resources",
+    "OXY": "Occidental Petroleum", "WMB": "Williams Companies",
+    "KMI": "Kinder Morgan", "HAL": "Halliburton",
+    "DVN": "Devon Energy", "FANG": "Diamondback Energy",
+    "HES": "Hess", "BKR": "Baker Hughes",
+    "OKE": "ONEOK", "CTRA": "Coterra Energy",
+    "TRGP": "Targa Resources", "EQT": "EQT Corp",
+    "APA": "APA Corp",
+    # ── Materials ──
     "LIN": "Linde", "APD": "Air Products", "SHW": "Sherwin-Williams",
     "FCX": "Freeport-McMoRan", "NEM": "Newmont", "DOW": "Dow Inc",
+    "ECL": "Ecolab", "DD": "DuPont", "NUE": "Nucor",
+    "VMC": "Vulcan Materials", "MLM": "Martin Marietta",
+    "PPG": "PPG Industries", "CE": "Celanese",
+    "EMN": "Eastman Chemical", "ALB": "Albemarle",
+    "CF": "CF Industries", "MOS": "Mosaic",
+    "IFF": "International Flavors & Fragrances",
+    "PKG": "Packaging Corp of America", "IP": "International Paper",
+    "SEE": "Sealed Air", "AVY": "Avery Dennison",
+    "BALL": "Ball Corp", "STLD": "Steel Dynamics",
+    "AMCR": "Amcor",
+    # ── Utilities ──
+    "NEE": "NextEra Energy", "SO": "Southern Co", "DUK": "Duke Energy",
+    "D": "Dominion Energy", "AEP": "American Electric Power",
+    "EXC": "Exelon", "SRE": "Sempra Energy",
+    "XEL": "Xcel Energy", "ED": "Consolidated Edison",
+    "WEC": "WEC Energy Group", "ES": "Eversource Energy",
+    "AWK": "American Water Works", "DTE": "DTE Energy",
+    "PPL": "PPL Corp", "FE": "FirstEnergy",
+    "AEE": "Ameren", "CMS": "CMS Energy",
+    "CNP": "CenterPoint Energy", "ATO": "Atmos Energy",
+    "EVRG": "Evergy", "ETR": "Entergy",
+    "PEG": "Public Service Enterprise", "PNW": "Pinnacle West",
+    "NI": "NiSource", "LNT": "Alliant Energy",
+    "NRG": "NRG Energy",
+    # ── Real Estate ──
+    "AMT": "American Tower", "PLD": "Prologis",
+    "CCI": "Crown Castle", "SPG": "Simon Property Group",
+    "O": "Realty Income", "PSA": "Public Storage",
+    "EQIX": "Equinix", "WELL": "Welltower",
+    "DLR": "Digital Realty", "VICI": "VICI Properties",
+    "AVB": "AvalonBay Communities", "EQR": "Equity Residential",
+    "SBAC": "SBA Communications", "ARE": "Alexandria Real Estate",
+    "WY": "Weyerhaeuser", "MAA": "Mid-America Apartment",
+    "ESS": "Essex Property Trust", "INVH": "Invitation Homes",
+    "VTR": "Ventas", "HST": "Host Hotels & Resorts",
+    "REG": "Regency Centers", "KIM": "Kimco Realty",
+    "CPT": "Camden Property", "UDR": "UDR",
+    "BXP": "BXP", "PEAK": "Healthpeak Properties",
+    "FRT": "Federal Realty",
 }
 
-# 米国株データキャッシュ (ticker -> (timestamp, data))
-_us_stock_cache: dict[str, tuple[float, dict]] = {}
-_us_cache_lock = threading.Lock()
-US_CACHE_TTL = 600  # 10分
 
-
-def _fetch_us_stock_info(ticker: str) -> dict | None:
-    """yfinance で米国株の財務情報を取得 (キャッシュ付き)"""
-    now = time()
-    with _us_cache_lock:
-        if ticker in _us_stock_cache:
-            ts, data = _us_stock_cache[ticker]
-            if now - ts < US_CACHE_TTL:
-                return data
+def _fetch_us_stock_info_raw(ticker: str) -> dict | None:
+    """yfinance で米国株の財務情報を取得"""
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
@@ -2316,8 +2502,6 @@ def _fetch_us_stock_info(ticker: str) -> dict | None:
             "lo52": _r(lo52),
         }
 
-        with _us_cache_lock:
-            _us_stock_cache[ticker] = (now, data)
         return data
     except Exception as e:
         print(f"[WARN] US stock {ticker}: {e}")
@@ -2484,6 +2668,99 @@ def _calc_us_total_score(
     return round(sum(layers[k] * w[k] / total_w for k in active), 1)
 
 
+# ── 米国株 バックグラウンドDB更新 ──
+
+_us_update_running = False
+_us_last_updated: str | None = None
+
+
+def _upsert_us_stock(d: dict):
+    """us_stocks テーブルに UPSERT"""
+    cols = [
+        "ticker", "company_name", "sector", "industry", "price", "market_cap",
+        "per", "pbr", "roe", "eps", "bps", "dividend", "dividend_yield",
+        "revenue", "net_income", "operating_margin", "profit_margin",
+        "gross_margins", "cash_ratio", "equity_ratio", "fcf",
+        "revenue_growth", "earnings_growth", "total_debt", "beta",
+        "debt_to_equity", "current_ratio", "payout_ratio", "roa",
+        "hi52", "lo52", "value_score", "quality_score", "momentum_score",
+        "dividend_score", "stability_score", "takehara_score", "target_per15",
+        "updated_at",
+    ]
+    vals = [d.get(c) for c in cols]
+    placeholders = ",".join(["?"] * len(cols))
+    update_set = ",".join(f"{c}=excluded.{c}" for c in cols if c != "ticker")
+    with get_db(readonly=False) as conn:
+        conn.execute(
+            f"INSERT INTO us_stocks ({','.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(ticker) DO UPDATE SET {update_set}",
+            vals,
+        )
+        conn.commit()
+
+
+def _update_us_stocks_batch():
+    """バックグラウンドで全米国株データを更新"""
+    global _us_update_running, _us_last_updated
+    if _us_update_running:
+        return
+    _us_update_running = True
+    try:
+        tickers = list(US_STOCK_UNIVERSE.keys())
+        batch_size = 10
+        updated = 0
+        for i in range(0, len(tickers), batch_size):
+            batch = tickers[i:i + batch_size]
+            for ticker in batch:
+                try:
+                    data = _fetch_us_stock_info_raw(ticker)
+                    if data and data.get("price"):
+                        v_score, v_parts = _us_value_score(data)
+                        q_score, q_parts = _us_quality_score(data)
+                        m_score, m_parts = _us_momentum_score(data)
+                        dv_score, dv_parts = _us_dividend_score(data)
+                        st_score, st_parts = _us_stability_score(data)
+                        total = _calc_us_total_score(v_score, q_score, m_score, dv_score, st_score)
+                        targets = calc_target_prices(data.get("eps"), data.get("bps"))
+                        data["value_score"] = round(v_score, 1)
+                        data["quality_score"] = round(q_score, 1)
+                        data["momentum_score"] = round(m_score, 1)
+                        data["dividend_score"] = round(dv_score, 1)
+                        data["stability_score"] = round(st_score, 1)
+                        data["takehara_score"] = round(total, 1)
+                        data["target_per15"] = targets.get("target_per15")
+                        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        _upsert_us_stock(data)
+                        updated += 1
+                except Exception as e:
+                    print(f"[US-BG] {ticker}: {e}")
+            if i + batch_size < len(tickers):
+                from time import sleep
+                sleep(2)
+        _us_last_updated = datetime.now(timezone.utc).isoformat()
+        print(f"[US-BG] Updated {updated}/{len(tickers)} tickers at {_us_last_updated}")
+    except Exception as e:
+        print(f"[US-BG] Update failed: {e}")
+    finally:
+        _us_update_running = False
+
+
+def _us_bg_scheduler():
+    """6時間ごとに米国株データを更新するスケジューラ"""
+    from time import sleep
+    while True:
+        try:
+            _update_us_stocks_batch()
+        except Exception as e:
+            print(f"[US-BG] Scheduler error: {e}")
+        sleep(6 * 3600)
+
+
+# バックグラウンド更新スレッドを起動
+_us_bg_thread = threading.Thread(target=_us_bg_scheduler, daemon=True, name="us-stock-updater")
+_us_bg_thread.start()
+
+
 @app.get("/api/us-screener")
 def us_screener(
     per_max: float | None = Query(None),
@@ -2495,115 +2772,106 @@ def us_screener(
     sector: str | None = Query(None),
     sort_by: str = Query("score"),
     sort_dir: str = Query(""),
-    tickers: str | None = Query(None, description="カンマ区切りティッカー(未指定で全銘柄)"),
+    page: int = Query(1),
+    limit: int = Query(100),
+    tickers: str | None = Query(None),
 ) -> dict:
-    """米国株 竹原式スクリーニング (yfinance ベース)"""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    """米国株スクリーニング (DB読み取り)"""
+    with get_db() as conn:
+        conditions = []
+        params: list = []
+        if per_max is not None:
+            conditions.append("per IS NOT NULL AND per <= ?")
+            params.append(per_max)
+        if pbr_max is not None:
+            conditions.append("pbr IS NOT NULL AND pbr <= ?")
+            params.append(pbr_max)
+        if roe_min is not None:
+            conditions.append("roe IS NOT NULL AND roe >= ?")
+            params.append(roe_min)
+        if operating_margin_min is not None:
+            conditions.append("operating_margin IS NOT NULL AND operating_margin >= ?")
+            params.append(operating_margin_min)
+        if fcf_positive:
+            conditions.append("fcf IS NOT NULL AND fcf > 0")
+        if dividend_min is not None:
+            conditions.append("dividend IS NOT NULL AND dividend >= ?")
+            params.append(dividend_min)
+        if sector:
+            conditions.append("sector = ?")
+            params.append(sector)
+        if tickers:
+            ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+            placeholders = ",".join(["?"] * len(ticker_list))
+            conditions.append(f"ticker IN ({placeholders})")
+            params.extend(ticker_list)
+        where = " AND ".join(conditions) if conditions else "1=1"
+        base_where = f"price IS NOT NULL AND {where}"
 
-    # 対象銘柄の決定
-    if tickers:
-        ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    else:
-        ticker_list = list(US_STOCK_UNIVERSE.keys())
+        total = conn.execute(f"SELECT COUNT(*) FROM us_stocks WHERE {base_where}", params).fetchone()[0]
 
-    # 並列取得 (最大10スレッド)
-    results = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(_fetch_us_stock_info, t): t for t in ticker_list}
-        for future in as_completed(futures):
-            ticker = futures[future]
-            try:
-                data = future.result()
-                if data and data.get("price"):
-                    results.append(data)
-            except Exception:
-                pass
-
-    # フィルタ適用
-    filtered = []
-    for d in results:
-        if per_max is not None and (d.get("per") is None or d["per"] > per_max):
-            continue
-        if pbr_max is not None and (d.get("pbr") is None or d["pbr"] > pbr_max):
-            continue
-        if roe_min is not None and (d.get("roe") is None or d["roe"] < roe_min):
-            continue
-        if operating_margin_min is not None and (d.get("operating_margin") is None or d["operating_margin"] < operating_margin_min):
-            continue
-        if fcf_positive and (d.get("fcf") is None or d["fcf"] <= 0):
-            continue
-        if dividend_min is not None and (d.get("dividend") is None or d["dividend"] < dividend_min):
-            continue
-        if sector and d.get("sector") != sector:
-            continue
-
-        # 5層スコア計算
-        v_score, v_parts = _us_value_score(d)
-        q_score, q_parts = _us_quality_score(d)
-        m_score, m_parts = _us_momentum_score(d)
-        dv_score, dv_parts = _us_dividend_score(d)
-        st_score, st_parts = _us_stability_score(d)
-        total = _calc_us_total_score(v_score, q_score, m_score, dv_score, st_score)
-        d["takehara_score"] = total
-        d["value_score"] = v_score
-        d["quality_score"] = q_score
-        d["momentum_score"] = m_score
-        d["dividend_score"] = dv_score
-        d["stability_score"] = st_score
-        d["score_layers"] = {
-            "value": {"score": v_score, "parts": v_parts},
-            "quality": {"score": q_score, "parts": q_parts},
-            "momentum": {"score": m_score, "parts": m_parts},
-            "dividend": {"score": dv_score, "parts": dv_parts},
-            "stability": {"score": st_score, "parts": st_parts},
+        sort_map = {
+            "score": "takehara_score", "value_score": "value_score",
+            "quality_score": "quality_score", "momentum_score": "momentum_score",
+            "dividend_score": "dividend_score", "stability_score": "stability_score",
+            "per": "per", "pbr": "pbr", "roe": "roe",
+            "operating_margin": "operating_margin", "dividend": "dividend",
+            "company_name": "company_name", "market_cap": "market_cap",
         }
+        col = sort_map.get(sort_by, "takehara_score")
+        desc_keys = {"score", "value_score", "quality_score", "momentum_score",
+                     "dividend_score", "stability_score", "roe", "operating_margin",
+                     "dividend", "market_cap"}
+        desc = (sort_by in desc_keys) if sort_dir == "" else (sort_dir.lower() == "desc")
+        order = "DESC" if desc else "ASC"
+        offset = (page - 1) * limit
 
-        # 売り時目安
-        d.update(calc_target_prices(d.get("eps"), d.get("bps")))
+        rows = conn.execute(
+            f"SELECT * FROM us_stocks WHERE {base_where} ORDER BY {col} {order} NULLS LAST LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
 
-        filtered.append(d)
+        sectors_rows = conn.execute(
+            "SELECT DISTINCT sector FROM us_stocks WHERE sector IS NOT NULL AND sector != '' ORDER BY sector"
+        ).fetchall()
+        universe_count = conn.execute("SELECT COUNT(*) FROM us_stocks").fetchone()[0]
 
-    # ソート
-    sort_defaults = {
-        "score": ("takehara_score", True),
-        "value_score": ("value_score", True),
-        "quality_score": ("quality_score", True),
-        "momentum_score": ("momentum_score", True),
-        "dividend_score": ("dividend_score", True),
-        "stability_score": ("stability_score", True),
-        "per": ("per", False),
-        "pbr": ("pbr", False),
-        "roe": ("roe", True),
-        "operating_margin": ("operating_margin", True),
-        "dividend": ("dividend", True),
-        "company_name": ("company_name", False),
-        "market_cap": ("market_cap", True),
-    }
-    col, default_desc = sort_defaults.get(sort_by, ("takehara_score", True))
-    desc = default_desc if sort_dir == "" else (sort_dir.lower() == "desc")
-    filtered.sort(key=lambda x: x.get(col) or 0, reverse=desc)
-
-    # セクター一覧を返す
-    all_sectors = sorted(set(d.get("sector", "") for d in results if d.get("sector")))
-
+    results = [dict(r) for r in rows]
     return {
-        "total": len(filtered),
-        "universe_size": len(ticker_list),
-        "fetched": len(results),
-        "sectors": all_sectors,
-        "results": filtered,
+        "total": total,
+        "universe_size": universe_count or len(US_STOCK_UNIVERSE),
+        "page": page,
+        "limit": limit,
+        "pages": max(1, -(-total // limit)),
+        "sectors": [r[0] for r in sectors_rows],
+        "updated_at": _us_last_updated,
+        "updating": _us_update_running,
+        "results": results,
     }
 
 
 @app.get("/api/us-sectors")
 def us_sectors() -> list[str]:
-    """米国株セクター一覧（キャッシュから取得）"""
-    sectors = set()
-    with _us_cache_lock:
-        for _, (_, data) in _us_stock_cache.items():
-            if data.get("sector"):
-                sectors.add(data["sector"])
-    return sorted(sectors)
+    """米国株セクター一覧 (DB読み取り)"""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT sector FROM us_stocks WHERE sector IS NOT NULL AND sector != '' ORDER BY sector"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+@app.get("/api/us-screener/status")
+def us_screener_status() -> dict:
+    with get_db() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM us_stocks WHERE price IS NOT NULL").fetchone()[0]
+        newest = conn.execute("SELECT MAX(updated_at) FROM us_stocks").fetchone()[0]
+    return {
+        "count": count,
+        "universe_size": len(US_STOCK_UNIVERSE),
+        "updating": _us_update_running,
+        "last_updated": _us_last_updated,
+        "newest_record": newest,
+    }
 
 
 # --------------- 静的ファイル配信 (本番: Dockerコンテナ用) ---------------

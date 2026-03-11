@@ -112,6 +112,7 @@ export const api = {
   alerts: () => get('/alerts'),
   // 米国株
   usScreener: (p) => get('/us-screener', p),
+  usScreenerStatus: () => get('/us-screener/status'),
   // デモトレード（ユーザーごと）
   demoTrades: () => get('/demo-trades'),
   createTrade: (trade) => postJSON('/demo-trades', trade),
