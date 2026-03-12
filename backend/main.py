@@ -2913,6 +2913,18 @@ def _ensure_regime_tables():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_macro_ind ON macro_indicators(indicator, date DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_regimes_date ON market_regimes(date DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bt_strat ON backtest_results(strategy_id, date)")
+        # JP trend tables
+        conn.execute("""CREATE TABLE IF NOT EXISTS jp_trend_signals (
+            securities_code TEXT NOT NULL, signal_type TEXT NOT NULL,
+            signal_date TEXT NOT NULL, price REAL, detail TEXT,
+            PRIMARY KEY (securities_code, signal_type))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS industry_metrics (
+            industry TEXT PRIMARY KEY, company_count INTEGER,
+            avg_per REAL, median_per REAL, avg_pbr REAL, avg_roe REAL,
+            avg_operating_margin REAL, avg_revenue_growth REAL,
+            avg_total_score REAL, avg_momentum_score REAL,
+            top_ticker TEXT, regime_affinity TEXT, category TEXT, updated_at TEXT)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jp_sig_type ON jp_trend_signals(signal_type)")
         conn.commit()
         # Seed strategies
         _seed_strategy_models(conn)
@@ -2976,6 +2988,8 @@ MACRO_TICKERS: dict[str, str] = {
     "xlk": "XLK", "xlf": "XLF", "xle": "XLE", "xli": "XLI",
     "xly": "XLY", "xlp": "XLP", "xlre": "XLRE", "xlb": "XLB",
     "xlu": "XLU", "xlv": "XLV",
+    # 日本市場指標
+    "nikkei225": "^N225", "usdjpy": "JPY=X", "topix_etf": "1306.T",
 }
 
 FRED_SERIES: dict[str, str] = {
@@ -3711,6 +3725,581 @@ def regime_breakouts_api(request: Request):
     _get_current_user(request)
     signals = _detect_stock_signals()
     return {"breakouts": signals, "count": len(signals)}
+
+
+# --------------- 日本株トレンドモデル + 業種別モデル ---------------
+
+INDUSTRY_CATEGORIES: dict[str, str] = {
+    "鉄鋼": "cyclical", "非鉄金属": "cyclical", "機械": "cyclical",
+    "輸送用機器": "cyclical", "鉱業": "cyclical", "ゴム製品": "cyclical",
+    "ガラス・土石製品": "cyclical", "金属製品": "cyclical",
+    "海運業": "cyclical", "空運業": "cyclical",
+    "情報・通信業": "growth", "サービス業": "growth",
+    "精密機器": "growth", "電気機器": "growth",
+    "食料品": "defensive", "医薬品": "defensive",
+    "電気・ガス業": "defensive", "陸運業": "defensive",
+    "水産・農林業": "defensive",
+    "銀行業": "financial", "証券、商品先物取引業": "financial",
+    "保険業": "financial", "その他金融業": "financial",
+    "建設業": "other", "不動産業": "other", "卸売業": "other",
+    "小売業": "other", "繊維製品": "other", "パルプ・紙": "other",
+    "化学": "other", "石油・石炭製品": "other", "倉庫・運輸関連業": "other",
+}
+
+CATEGORY_LABELS = {
+    "cyclical": "景気敏感", "growth": "成長",
+    "defensive": "ディフェンシブ", "financial": "金融", "other": "その他",
+}
+
+REGIME_INDUSTRY_AFFINITY: dict[str, dict[str, float]] = {
+    "trend_up": {"growth": 0.9, "cyclical": 0.8, "financial": 0.5, "other": 0.5, "defensive": 0.3},
+    "trend_down": {"defensive": 0.9, "financial": 0.7, "other": 0.5, "cyclical": 0.2, "growth": 0.2},
+    "risk_off": {"defensive": 1.0, "other": 0.5, "financial": 0.4, "cyclical": 0.2, "growth": 0.1},
+    "inflation": {"cyclical": 0.9, "other": 0.6, "defensive": 0.5, "financial": 0.4, "growth": 0.3},
+    "range_bound": {"financial": 0.8, "defensive": 0.8, "other": 0.6, "cyclical": 0.4, "growth": 0.4},
+}
+
+# 輸出関連業種（円安でボーナス）
+_EXPORT_INDUSTRIES = {"輸送用機器", "電気機器", "機械", "精密機器"}
+# 内需関連業種（円高でボーナス）
+_DOMESTIC_INDUSTRIES = {"食料品", "小売業", "サービス業", "陸運業", "不動産業"}
+
+SIGNAL_LABELS = {
+    "golden_cross": "ゴールデンクロス", "death_cross": "デスクロス",
+    "52w_high": "52週高値", "52w_low": "52週安値",
+    "rsi_over": "RSI買われすぎ", "rsi_under": "RSI売られすぎ",
+    "momentum_top": "モメンタム上位",
+}
+
+
+def _detect_jp_stock_signals():
+    """日本株のトレンドシグナルを検出し jp_trend_signals テーブルに保存"""
+    import yfinance as yf
+    from time import sleep as _sl
+
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT c.securities_code, c.company_name, c.industry,
+                   f.per, f.roe, f.revenue
+            FROM companies c
+            JOIN financials f ON c.edinet_code = f.edinet_code
+            WHERE c.securities_code IS NOT NULL AND c.securities_code != ''
+              AND f.fiscal_year = (SELECT MAX(fiscal_year) FROM financials)
+            ORDER BY f.roe DESC
+            LIMIT 200
+        """).fetchall()
+
+    if not rows:
+        print("[JP-TREND] No JP stocks found")
+        return
+
+    signals_batch = []
+    consecutive_fail = 0
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    for i in range(0, len(rows), 5):
+        batch = rows[i:i + 5]
+        for r in batch:
+            sec_code = r["securities_code"]
+            ticker = _sec_code_to_ticker(sec_code)
+            if not ticker:
+                continue
+            try:
+                hist = yf.Ticker(ticker).history(period="1y", interval="1d")
+                if hist.empty or len(hist) < 30:
+                    consecutive_fail += 1
+                    continue
+                consecutive_fail = 0
+                closes = [float(x) for x in hist["Close"].tolist()]
+                highs = [float(x) for x in hist["High"].tolist()]
+                lows = [float(x) for x in hist["Low"].tolist()]
+                price = closes[-1]
+
+                # 52w high/low
+                hi52 = max(highs) if highs else None
+                lo52 = min(lows) if lows else None
+
+                if hi52 and hi52 > 0 and price / hi52 >= 0.97:
+                    signals_batch.append((sec_code, "52w_high", today, price,
+                        json.dumps({"hi52": round(hi52, 1), "pct": round((price / hi52 - 1) * 100, 1)})))
+                if lo52 and lo52 > 0 and price / lo52 <= 1.03:
+                    signals_batch.append((sec_code, "52w_low", today, price,
+                        json.dumps({"lo52": round(lo52, 1), "pct": round((price / lo52 - 1) * 100, 1)})))
+
+                # Golden/Death cross (25d vs 75d SMA)
+                if len(closes) >= 76:
+                    sma25_now = _sma(closes, 25)
+                    sma75_now = _sma(closes, 75)
+                    sma25_prev = _sma(closes[:-1], 25)
+                    sma75_prev = _sma(closes[:-1], 75)
+                    if sma25_now and sma75_now and sma25_prev and sma75_prev:
+                        if sma25_now > sma75_now and sma25_prev <= sma75_prev:
+                            signals_batch.append((sec_code, "golden_cross", today, price,
+                                json.dumps({"sma25": round(sma25_now, 1), "sma75": round(sma75_now, 1)})))
+                        elif sma25_now < sma75_now and sma25_prev >= sma75_prev:
+                            signals_batch.append((sec_code, "death_cross", today, price,
+                                json.dumps({"sma25": round(sma25_now, 1), "sma75": round(sma75_now, 1)})))
+
+                # RSI
+                rsi = _rsi(closes)
+                if rsi is not None:
+                    if rsi >= 70:
+                        signals_batch.append((sec_code, "rsi_over", today, price,
+                            json.dumps({"rsi": rsi})))
+                    elif rsi <= 30:
+                        signals_batch.append((sec_code, "rsi_under", today, price,
+                            json.dumps({"rsi": rsi})))
+
+            except Exception as e:
+                consecutive_fail += 1
+                if consecutive_fail <= 3:
+                    print(f"[JP-TREND] {ticker} fail: {e}")
+
+            if consecutive_fail >= 10:
+                print("[JP-TREND] 10 consecutive fails, backing off 30s...")
+                _sl(30)
+                consecutive_fail = 0
+
+        _sl(3)
+
+    # momentum_top from existing scores (no yfinance needed)
+    with get_db() as conn:
+        mom_rows = conn.execute("""
+            SELECT c.securities_code FROM companies c
+            JOIN financials f ON c.edinet_code = f.edinet_code
+            WHERE c.securities_code IS NOT NULL AND c.securities_code != ''
+              AND f.fiscal_year = (SELECT MAX(fiscal_year) FROM financials)
+        """).fetchall()
+
+    # Store signals
+    with get_db(readonly=False) as conn:
+        conn.execute("DELETE FROM jp_trend_signals")
+        for s in signals_batch:
+            conn.execute(
+                "INSERT OR REPLACE INTO jp_trend_signals "
+                "(securities_code, signal_type, signal_date, price, detail) "
+                "VALUES (?,?,?,?,?)", s)
+        conn.commit()
+    print(f"[JP-TREND] Detected {len(signals_batch)} signals from {len(rows)} stocks")
+
+
+def _calc_industry_metrics():
+    """業種別メトリクスを集計し industry_metrics テーブルに保存"""
+    with get_db() as conn:
+        industries = [r["industry"] for r in conn.execute(
+            "SELECT DISTINCT industry FROM companies "
+            "WHERE industry IS NOT NULL AND industry != ''").fetchall()]
+
+    if not industries:
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    results = []
+
+    with get_db() as conn:
+        max_fy = conn.execute("SELECT MAX(fiscal_year) FROM financials").fetchone()[0]
+        if not max_fy:
+            return
+
+        for ind in industries:
+            row = conn.execute("""
+                SELECT COUNT(*) as cnt,
+                       AVG(f.per) as avg_per,
+                       AVG(f.roe) as avg_roe,
+                       AVG(CASE WHEN f.revenue > 0 AND f.operating_income IS NOT NULL
+                           THEN CAST(f.operating_income AS REAL) / f.revenue END) as avg_opm,
+                       AVG(r.revenue_growth) as avg_rg
+                FROM companies c
+                JOIN financials f ON c.edinet_code = f.edinet_code
+                LEFT JOIN ratios r ON c.edinet_code = r.edinet_code AND r.fiscal_year = f.fiscal_year
+                WHERE c.industry = ? AND f.fiscal_year = ?
+                  AND c.securities_code IS NOT NULL AND c.securities_code != ''
+            """, (ind, max_fy)).fetchone()
+
+            if not row or row["cnt"] == 0:
+                continue
+
+            # Median PER
+            pers = conn.execute("""
+                SELECT f.per FROM companies c JOIN financials f ON c.edinet_code = f.edinet_code
+                WHERE c.industry = ? AND f.fiscal_year = ? AND f.per IS NOT NULL AND f.per > 0
+                  AND c.securities_code IS NOT NULL
+                ORDER BY f.per
+            """, (ind, max_fy)).fetchall()
+            median_per = None
+            if pers:
+                per_vals = [p["per"] for p in pers]
+                mid = len(per_vals) // 2
+                median_per = per_vals[mid] if len(per_vals) % 2 else (per_vals[mid - 1] + per_vals[mid]) / 2
+
+            # Avg PBR (PER * ROE)
+            avg_pbr = None
+            if row["avg_per"] and row["avg_roe"]:
+                avg_pbr = round(row["avg_per"] * row["avg_roe"] / 100, 2) if row["avg_roe"] < 1 \
+                    else round(row["avg_per"] * row["avg_roe"], 2)
+
+            # Top ticker by ROE
+            top = conn.execute("""
+                SELECT c.securities_code, c.company_name FROM companies c
+                JOIN financials f ON c.edinet_code = f.edinet_code
+                WHERE c.industry = ? AND f.fiscal_year = ?
+                  AND c.securities_code IS NOT NULL AND c.securities_code != ''
+                ORDER BY f.roe DESC LIMIT 1
+            """, (ind, max_fy)).fetchone()
+
+            category = INDUSTRY_CATEGORIES.get(ind, "other")
+            regime_aff = {}
+            for regime, cat_scores in REGIME_INDUSTRY_AFFINITY.items():
+                regime_aff[regime] = cat_scores.get(category, 0.5)
+
+            results.append((
+                ind, row["cnt"],
+                round(row["avg_per"], 1) if row["avg_per"] else None,
+                round(median_per, 1) if median_per else None,
+                avg_pbr,
+                round(row["avg_roe"] * 100, 1) if row["avg_roe"] else None,
+                round(row["avg_opm"] * 100, 1) if row["avg_opm"] else None,
+                round(row["avg_rg"] * 100, 1) if row["avg_rg"] else None,
+                None,  # avg_total_score — placeholder
+                None,  # avg_momentum_score — placeholder
+                f"{top['securities_code']}:{top['company_name']}" if top else None,
+                json.dumps(regime_aff),
+                category, now,
+            ))
+
+    with get_db(readonly=False) as conn:
+        conn.execute("DELETE FROM industry_metrics")
+        for r in results:
+            conn.execute(
+                "INSERT INTO industry_metrics "
+                "(industry, company_count, avg_per, median_per, avg_pbr, avg_roe, "
+                "avg_operating_margin, avg_revenue_growth, avg_total_score, avg_momentum_score, "
+                "top_ticker, regime_affinity, category, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+        conn.commit()
+    print(f"[JP-TREND] Calculated metrics for {len(results)} industries")
+
+
+def _get_industry_rotation(current_regime: str | None) -> list[dict]:
+    """現在のレジームに基づいて業種推奨度ランキングを返す"""
+    if not current_regime:
+        current_regime = "range_bound"
+
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM industry_metrics ORDER BY company_count DESC").fetchall()
+        # USD/JPY 3ヶ月変化率
+        usdjpy_rows = conn.execute(
+            "SELECT value FROM macro_indicators WHERE indicator='usdjpy' ORDER BY date DESC LIMIT 65"
+        ).fetchall()
+
+    usdjpy_chg = None
+    if len(usdjpy_rows) >= 60:
+        usdjpy_vals = [r["value"] for r in reversed(usdjpy_rows)]
+        usdjpy_chg = _pct_change(usdjpy_vals, 60)
+
+    results = []
+    for r in rows:
+        category = r["category"] or "other"
+        regime_aff = json.loads(r["regime_affinity"]) if r["regime_affinity"] else {}
+        affinity = regime_aff.get(current_regime, 0.5)
+
+        # 推奨度 = 局面適合度(40) + ファンダ(30) + モメンタム(30)
+        regime_score = affinity * 40
+        fund_score = (r["avg_roe"] or 0) / 30 * 30  # ROE 30% → max 30
+        fund_score = min(30, max(0, fund_score))
+        # Use avg_operating_margin as momentum proxy
+        mom_score = min(30, max(0, (r["avg_operating_margin"] or 0) / 20 * 30))
+
+        total = regime_score + fund_score + mom_score
+
+        # 円安/円高ボーナス
+        ind = r["industry"]
+        if usdjpy_chg is not None:
+            if usdjpy_chg > 0.05 and ind in _EXPORT_INDUSTRIES:
+                total += 15
+            elif usdjpy_chg < -0.05 and ind in _DOMESTIC_INDUSTRIES:
+                total += 15
+
+        total = min(100, round(total, 1))
+
+        # 推奨度ラベル
+        if affinity >= 0.8:
+            match_label = "★推奨"
+        elif affinity >= 0.5:
+            match_label = "○適合"
+        else:
+            match_label = "⚠非推奨"
+
+        results.append({
+            "industry": ind,
+            "category": category,
+            "category_ja": CATEGORY_LABELS.get(category, "その他"),
+            "company_count": r["company_count"],
+            "avg_per": r["avg_per"], "median_per": r["median_per"],
+            "avg_pbr": r["avg_pbr"], "avg_roe": r["avg_roe"],
+            "avg_operating_margin": r["avg_operating_margin"],
+            "avg_revenue_growth": r["avg_revenue_growth"],
+            "recommendation_score": total,
+            "regime_match": match_label,
+            "top_ticker": r["top_ticker"],
+        })
+
+    results.sort(key=lambda x: x["recommendation_score"], reverse=True)
+    return results
+
+
+# BG scheduler に JP処理を追加（既存 _update_regime_data の後に呼ぶ）
+_jp_trend_last_updated: str | None = None
+
+
+def _update_jp_trend_data():
+    global _jp_trend_last_updated
+    try:
+        print("[JP-TREND] Starting JP stock signal detection...")
+        _detect_jp_stock_signals()
+        print("[JP-TREND] Calculating industry metrics...")
+        _calc_industry_metrics()
+        _jp_trend_last_updated = datetime.now(timezone.utc).isoformat()
+        print(f"[JP-TREND] Done at {_jp_trend_last_updated}")
+    except Exception as e:
+        print(f"[JP-TREND] Update failed: {e}")
+        import traceback; traceback.print_exc()
+
+
+def _jp_trend_bg_scheduler():
+    from time import sleep as _sl
+    _sl(120)  # 2分遅延（レジームBGの後に開始）
+    while True:
+        try:
+            _update_jp_trend_data()
+        except Exception as e:
+            print(f"[JP-TREND] Sched err: {e}")
+        _sl(6 * 3600)
+
+
+_jp_trend_bg_thread = threading.Thread(target=_jp_trend_bg_scheduler, daemon=True, name="jp-trend-updater")
+_jp_trend_bg_thread.start()
+
+
+# --------------- JP Trend API ---------------
+
+@app.get("/api/jp-trend/status")
+def jp_trend_status():
+    with get_db() as conn:
+        sig_cnt = conn.execute("SELECT COUNT(*) FROM jp_trend_signals").fetchone()[0]
+        ind_cnt = conn.execute("SELECT COUNT(*) FROM industry_metrics").fetchone()[0]
+    return {"last_updated": _jp_trend_last_updated, "signal_count": sig_cnt, "industry_count": ind_cnt}
+
+
+@app.get("/api/jp-trend/dashboard")
+def jp_trend_dashboard(request: Request):
+    _get_current_user(request)
+    with get_db() as conn:
+        # Current regime
+        rrow = conn.execute("SELECT regime FROM market_regimes ORDER BY date DESC LIMIT 1").fetchone()
+        cur_regime = rrow["regime"] if rrow else None
+
+        # Nikkei & USD/JPY latest
+        def _latest(ind):
+            r = conn.execute(
+                "SELECT value FROM macro_indicators WHERE indicator=? ORDER BY date DESC LIMIT 2",
+                (ind,)).fetchall()
+            if not r:
+                return None
+            val = r[0]["value"]
+            prev = r[1]["value"] if len(r) > 1 else val
+            chg = round((val - prev) / prev * 100, 2) if prev else 0
+            return {"value": round(val, 2), "change_pct": chg}
+
+        nikkei = _latest("nikkei225")
+        usdjpy = _latest("usdjpy")
+
+        # USD/JPY trend
+        usdjpy_trend = "neutral"
+        if usdjpy:
+            urows = conn.execute(
+                "SELECT value FROM macro_indicators WHERE indicator='usdjpy' ORDER BY date DESC LIMIT 65"
+            ).fetchall()
+            if len(urows) >= 60:
+                uvals = [r["value"] for r in reversed(urows)]
+                chg3m = _pct_change(uvals, 60)
+                if chg3m and chg3m > 0.03:
+                    usdjpy_trend = "yen_weak"
+                elif chg3m and chg3m < -0.03:
+                    usdjpy_trend = "yen_strong"
+            usdjpy["trend"] = usdjpy_trend
+
+        # Signal summary
+        sig_rows = conn.execute(
+            "SELECT signal_type, COUNT(*) as cnt FROM jp_trend_signals GROUP BY signal_type"
+        ).fetchall()
+        signal_summary = {r["signal_type"]: r["cnt"] for r in sig_rows}
+
+    # Recommended categories
+    cat_scores = REGIME_INDUSTRY_AFFINITY.get(cur_regime or "range_bound", {})
+    recommended = [k for k, v in sorted(cat_scores.items(), key=lambda x: -x[1]) if v >= 0.7]
+
+    # Top industries
+    rotation = _get_industry_rotation(cur_regime)
+    top5 = rotation[:5]
+
+    return {
+        "current_regime": cur_regime,
+        "current_regime_ja": REGIME_LABELS.get(cur_regime, cur_regime or "不明"),
+        "nikkei225": nikkei, "usdjpy": usdjpy,
+        "recommended_categories": [{"key": c, "label": CATEGORY_LABELS.get(c, c)} for c in recommended],
+        "top_industries": top5,
+        "signal_summary": signal_summary,
+    }
+
+
+@app.get("/api/jp-trend/signals")
+def jp_trend_signals_api(
+    request: Request,
+    signal_type: str | None = Query(None),
+    industry: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    _get_current_user(request)
+    with get_db() as conn:
+        q = """
+            SELECT s.securities_code, s.signal_type, s.signal_date, s.price, s.detail,
+                   c.company_name, c.industry
+            FROM jp_trend_signals s
+            JOIN companies c ON s.securities_code = c.securities_code
+            WHERE 1=1
+        """
+        params: list = []
+        if signal_type:
+            q += " AND s.signal_type = ?"
+            params.append(signal_type)
+        if industry:
+            q += " AND c.industry = ?"
+            params.append(industry)
+        q += " ORDER BY s.price DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(q, params).fetchall()
+
+    signals = []
+    for r in rows:
+        detail = json.loads(r["detail"]) if r["detail"] else {}
+        signals.append({
+            "securities_code": r["securities_code"],
+            "company_name": r["company_name"],
+            "industry": r["industry"],
+            "signal_type": r["signal_type"],
+            "signal_label": SIGNAL_LABELS.get(r["signal_type"], r["signal_type"]),
+            "signal_date": r["signal_date"],
+            "price": r["price"],
+            "detail": detail,
+        })
+    return {"signals": signals, "total": len(signals)}
+
+
+@app.get("/api/jp-trend/industries")
+def jp_trend_industries_api(request: Request):
+    _get_current_user(request)
+    with get_db() as conn:
+        rrow = conn.execute("SELECT regime FROM market_regimes ORDER BY date DESC LIMIT 1").fetchone()
+        cur_regime = rrow["regime"] if rrow else None
+
+    rotation = _get_industry_rotation(cur_regime)
+
+    # Signal counts per industry
+    with get_db() as conn:
+        sig_rows = conn.execute("""
+            SELECT c.industry, s.signal_type, COUNT(*) as cnt
+            FROM jp_trend_signals s
+            JOIN companies c ON s.securities_code = c.securities_code
+            GROUP BY c.industry, s.signal_type
+        """).fetchall()
+    ind_signals: dict[str, dict] = {}
+    for r in sig_rows:
+        ind_signals.setdefault(r["industry"], {})[r["signal_type"]] = r["cnt"]
+
+    for item in rotation:
+        item["signal_count"] = ind_signals.get(item["industry"], {})
+
+    return {"industries": rotation, "current_regime": cur_regime,
+            "current_regime_ja": REGIME_LABELS.get(cur_regime, cur_regime or "不明")}
+
+
+@app.get("/api/jp-trend/industry/{name}")
+def jp_trend_industry_detail(name: str, request: Request):
+    _get_current_user(request)
+    with get_db() as conn:
+        max_fy = conn.execute("SELECT MAX(fiscal_year) FROM financials").fetchone()[0]
+        if not max_fy:
+            raise HTTPException(404, "No financial data")
+
+        stocks = conn.execute("""
+            SELECT c.securities_code, c.company_name,
+                   f.per, f.roe, f.eps, f.revenue, f.operating_income, f.dividend
+            FROM companies c
+            JOIN financials f ON c.edinet_code = f.edinet_code
+            WHERE c.industry = ? AND f.fiscal_year = ?
+              AND c.securities_code IS NOT NULL AND c.securities_code != ''
+            ORDER BY f.roe DESC
+        """, (name, max_fy)).fetchall()
+
+        # Signals for this industry's stocks
+        sec_codes = [s["securities_code"] for s in stocks]
+        sig_map: dict[str, list[str]] = {}
+        if sec_codes:
+            placeholders = ",".join("?" * len(sec_codes))
+            sig_rows = conn.execute(
+                f"SELECT securities_code, signal_type FROM jp_trend_signals "
+                f"WHERE securities_code IN ({placeholders})", sec_codes).fetchall()
+            for sr in sig_rows:
+                sig_map.setdefault(sr["securities_code"], []).append(sr["signal_type"])
+
+        # Industry metrics
+        metrics_row = conn.execute(
+            "SELECT * FROM industry_metrics WHERE industry = ?", (name,)).fetchone()
+
+    category = INDUSTRY_CATEGORIES.get(name, "other")
+
+    # Regime history affinity
+    regime_hist = {}
+    for regime, label in REGIME_LABELS.items():
+        aff = REGIME_INDUSTRY_AFFINITY.get(regime, {}).get(category, 0.5)
+        if aff >= 0.8:
+            regime_hist[regime] = {"label": label, "match": "★推奨"}
+        elif aff >= 0.5:
+            regime_hist[regime] = {"label": label, "match": "○適合"}
+        else:
+            regime_hist[regime] = {"label": label, "match": "⚠非推奨"}
+
+    stock_list = []
+    for s in stocks:
+        opm = None
+        if s["revenue"] and s["revenue"] > 0 and s["operating_income"]:
+            opm = round(s["operating_income"] / s["revenue"] * 100, 1)
+        stock_list.append({
+            "securities_code": s["securities_code"],
+            "company_name": s["company_name"],
+            "per": s["per"], "roe": round(s["roe"] * 100, 1) if s["roe"] else None,
+            "eps": s["eps"], "dividend": s["dividend"],
+            "operating_margin": opm,
+            "signals": sig_map.get(s["securities_code"], []),
+        })
+
+    metrics = {}
+    if metrics_row:
+        metrics = {
+            "avg_per": metrics_row["avg_per"], "median_per": metrics_row["median_per"],
+            "avg_pbr": metrics_row["avg_pbr"], "avg_roe": metrics_row["avg_roe"],
+            "avg_operating_margin": metrics_row["avg_operating_margin"],
+            "avg_revenue_growth": metrics_row["avg_revenue_growth"],
+            "company_count": metrics_row["company_count"],
+        }
+
+    return {
+        "industry": name, "category": category,
+        "category_ja": CATEGORY_LABELS.get(category, "その他"),
+        "metrics": metrics, "stocks": stock_list,
+        "regime_affinity": regime_hist,
+    }
 
 
 # --------------- 静的ファイル配信 (本番: Dockerコンテナ用) ---------------

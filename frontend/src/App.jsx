@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
-import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Activity, Bell, Menu, X, LogOut } from 'lucide-react'
+import { LayoutDashboard, Building2, TrendingUp, Filter, LineChart, Globe, Activity, BarChart3, Bell, Menu, X, LogOut } from 'lucide-react'
 import { api, getToken, clearToken } from './api'
 import { useIsLocal } from './hooks/useIsLocal'
 import { useIsMobile } from './hooks/useIsMobile'
@@ -13,12 +13,14 @@ import Screener from './pages/Screener'
 import DemoTrade from './pages/DemoTrade'
 import USScreener from './pages/USScreener'
 import MarketRegime from './pages/MarketRegime'
+import JPTrend from './pages/JPTrend'
 
 const NAV = [
   { to: '/',            icon: LayoutDashboard, label: 'ダッシュボード' },
   { to: '/screener',    icon: Filter,          label: 'スクリーニング' },
   { to: '/us-screener', icon: Globe,           label: '米国株' },
   { to: '/regime',      icon: Activity,        label: 'レジーム' },
+  { to: '/jp-trend',    icon: BarChart3,       label: 'JPトレンド' },
   { to: '/demo-trade',  icon: LineChart,       label: 'デモトレード' },
   { to: '/companies',   icon: Building2,       label: '企業一覧' },
   { to: '/rankings',    icon: TrendingUp,      label: 'ランキング' },
@@ -370,6 +372,7 @@ export default function App() {
           <Route path="/screener"      element={<Screener />} />
           <Route path="/us-screener"   element={<USScreener />} />
           <Route path="/regime"        element={<MarketRegime />} />
+          <Route path="/jp-trend"     element={<JPTrend />} />
           <Route path="/demo-trade"    element={<DemoTrade />} />
           <Route path="/companies"     element={<Companies />} />
           <Route path="/companies/:id" element={<CompanyDetail />} />

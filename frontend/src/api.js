@@ -122,6 +122,12 @@ export const api = {
   regimeBacktest: (id) => get(`/regime/backtest/${id}`),
   regimeBreakouts: () => get('/regime/breakouts'),
   regimeStatus: () => get('/regime/status'),
+  // 日本株トレンド
+  jpTrendDashboard: () => get('/jp-trend/dashboard'),
+  jpTrendSignals: (p) => get('/jp-trend/signals', p),
+  jpTrendIndustries: () => get('/jp-trend/industries'),
+  jpTrendIndustry: (name) => get(`/jp-trend/industry/${encodeURIComponent(name)}`),
+  jpTrendStatus: () => get('/jp-trend/status'),
   // デモトレード（ユーザーごと）
   demoTrades: () => get('/demo-trades'),
   createTrade: (trade) => postJSON('/demo-trades', trade),
