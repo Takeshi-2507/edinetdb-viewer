@@ -121,6 +121,7 @@ export const api = {
   regimeStrategy: (id) => get(`/regime/strategy/${id}`),
   regimeBacktest: (id) => get(`/regime/backtest/${id}`),
   regimeBreakouts: () => get('/regime/breakouts'),
+  regimeCapitalFlow: () => get('/regime/capital-flow'),
   regimeStatus: () => get('/regime/status'),
   // 日本株トレンド
   jpTrendDashboard: () => get('/jp-trend/dashboard'),

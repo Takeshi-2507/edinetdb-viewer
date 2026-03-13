@@ -2990,6 +2990,12 @@ MACRO_TICKERS: dict[str, str] = {
     "xlu": "XLU", "xlv": "XLV",
     # 日本市場指標
     "nikkei225": "^N225", "usdjpy": "JPY=X", "topix_etf": "1306.T",
+    # 暗号資産 + 債券
+    "btc": "BTC-USD", "eth": "ETH-USD", "tlt": "TLT",
+    "bnb": "BNB-USD", "sol": "SOL-USD", "hype": "HYPE-USD",
+    "usdt": "USDT-USD", "usdc": "USDC-USD",
+    # BTC先物 (CME)
+    "btc_f": "BTC=F",
 }
 
 FRED_SERIES: dict[str, str] = {
@@ -3013,6 +3019,31 @@ def _fetch_macro_history_yf(key: str, period: str = "5y") -> list[dict]:
         return result
     except Exception as e:
         print(f"[REGIME-BG] yfinance {key}: {e}")
+        return []
+
+
+# 暗号資産の出来高も収集するティッカー
+_CRYPTO_VOLUME_KEYS = ["btc", "eth", "bnb", "sol", "hype", "usdt", "usdc", "btc_f"]
+
+
+def _fetch_volume_yf(key: str, period: str = "1y") -> list[dict]:
+    """指定ティッカーの出来高を取得"""
+    import yfinance as yf
+    ticker = MACRO_TICKERS.get(key)
+    if not ticker:
+        return []
+    try:
+        hist = yf.Ticker(ticker).history(period=period, interval="1d")
+        if hist.empty:
+            return []
+        result = []
+        for idx, row in hist.iterrows():
+            vol = float(row.get("Volume", 0))
+            if vol > 0:
+                result.append({"date": idx.strftime("%Y-%m-%d"), "value": round(vol, 0)})
+        return result
+    except Exception as e:
+        print(f"[REGIME-BG] volume {key}: {e}")
         return []
 
 
@@ -3480,6 +3511,17 @@ def _update_regime_data():
         if all_ind:
             _store_macro_indicators(all_ind)
             print(f"[REGIME-BG] Stored {len(all_ind)} indicators")
+        # 暗号資産の出来高収集
+        vol_ind: dict[str, list[dict]] = {}
+        for vk in _CRYPTO_VOLUME_KEYS:
+            vol_data = _fetch_volume_yf(vk, "1y")
+            if vol_data:
+                vol_ind[f"{vk}_vol"] = vol_data
+                print(f"[REGIME-BG] {vk}_vol: {len(vol_data)} days")
+            _sl(1)
+        if vol_ind:
+            _store_macro_indicators(vol_ind)
+            print(f"[REGIME-BG] Stored {len(vol_ind)} volume indicators")
         regime_res = _detect_market_regime()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         with get_db(readonly=False) as conn:
@@ -3725,6 +3767,382 @@ def regime_breakouts_api(request: Request):
     _get_current_user(request)
     signals = _detect_stock_signals()
     return {"breakouts": signals, "count": len(signals)}
+
+
+# --------------- 資産フロー（Capital Flow）— レジーム連動 ---------------
+
+ASSET_CLASSES: dict[str, dict] = {
+    "stocks":  {"label": "株式",     "tickers": ["sp500", "nikkei225"], "emoji": "\U0001f4c8"},
+    "bonds":   {"label": "債券",     "tickers": ["tlt"],               "emoji": "\U0001f3e6"},
+    "gold":    {"label": "ゴールド", "tickers": ["gold"],              "emoji": "\U0001f947"},
+    "oil":     {"label": "原油",     "tickers": ["oil"],               "emoji": "\U0001f6e2\ufe0f"},
+    "crypto":  {"label": "暗号資産", "tickers": ["btc", "eth"],        "emoji": "\u20bf"},
+}
+
+# 理論的レジーム×資産パフォーマンス (月次%, データ不足時のフォールバック)
+_REGIME_ASSET_FALLBACK: dict[str, dict[str, float]] = {
+    "trend_up":    {"stocks": 2.1,  "bonds": -0.3, "gold": 0.5,  "oil": 1.8,  "crypto": 5.2},
+    "trend_down":  {"stocks": -1.8, "bonds": 1.2,  "gold": 1.5,  "oil": -2.1, "crypto": -3.5},
+    "risk_off":    {"stocks": -2.5, "bonds": 2.0,  "gold": 2.8,  "oil": -3.0, "crypto": -5.0},
+    "inflation":   {"stocks": 0.5,  "bonds": -1.5, "gold": 3.0,  "oil": 4.0,  "crypto": 1.0},
+    "range_bound": {"stocks": 0.3,  "bonds": 0.5,  "gold": 0.2,  "oil": -0.5, "crypto": 0.8},
+}
+
+_FLOW_LABELS = [
+    (1.0,  "強い流入"),
+    (0.5,  "流入"),
+    (-0.5, "中立"),
+    (-1.0, "流出"),
+    (None, "強い流出"),
+]
+
+
+def _compute_capital_flows() -> dict:
+    """5資産クラスのフロー強度をクロスセクショナルzスコアで計算"""
+    import statistics
+
+    periods = {"1w": 5, "1m": 21, "3m": 63, "6m": 126}
+    weights = {"1w": 0.10, "1m": 0.30, "3m": 0.40, "6m": 0.20}
+
+    # 各ティッカーの時系列を取得
+    ticker_series: dict[str, list[dict]] = {}
+    all_tickers = set()
+    for ac in ASSET_CLASSES.values():
+        all_tickers.update(ac["tickers"])
+
+    for t in all_tickers:
+        data = _get_macro_history(t, 250)
+        if data:
+            ticker_series[t] = data
+
+    # 各資産クラスの期間リターンを計算
+    asset_returns: dict[str, dict[str, float | None]] = {}
+    asset_current: dict[str, dict[str, float | None]] = {}
+    asset_sparklines: dict[str, list[float]] = {}
+
+    for ac_key, ac_info in ASSET_CLASSES.items():
+        tickers = ac_info["tickers"]
+        returns_by_period: dict[str, float | None] = {}
+
+        # 現在値
+        cur_vals: dict[str, float | None] = {}
+        for t in tickers:
+            series = ticker_series.get(t, [])
+            cur_vals[t] = series[-1]["value"] if series else None
+        asset_current[ac_key] = cur_vals
+
+        # Sparkline: 代表ティッカーの90日分を正規化
+        rep_ticker = tickers[0]
+        rep_series = ticker_series.get(rep_ticker, [])
+        if len(rep_series) >= 2:
+            spark_data = [r["value"] for r in rep_series[-90:]]
+            base = spark_data[0] if spark_data[0] != 0 else 1
+            asset_sparklines[ac_key] = [round(v / base * 100, 2) for v in spark_data]
+        else:
+            asset_sparklines[ac_key] = []
+
+        # 期間リターン（複数ティッカーは平均）
+        for pkey, days in periods.items():
+            rets = []
+            for t in tickers:
+                series = ticker_series.get(t, [])
+                if len(series) >= days + 1:
+                    old_val = series[-(days + 1)]["value"]
+                    new_val = series[-1]["value"]
+                    if old_val and old_val != 0:
+                        rets.append((new_val - old_val) / old_val * 100)
+            returns_by_period[pkey] = round(statistics.mean(rets), 2) if rets else None
+        asset_returns[ac_key] = returns_by_period
+
+    # クロスセクショナルzスコア計算
+    asset_zscores: dict[str, dict[str, float | None]] = {k: {} for k in ASSET_CLASSES}
+    for pkey in periods:
+        vals = []
+        keys_with_data = []
+        for ac_key in ASSET_CLASSES:
+            r = asset_returns[ac_key].get(pkey)
+            if r is not None:
+                vals.append(r)
+                keys_with_data.append(ac_key)
+
+        if len(vals) >= 3:
+            mean = statistics.mean(vals)
+            stdev = statistics.stdev(vals) if len(vals) > 1 else 1.0
+            if stdev == 0:
+                stdev = 1.0
+            for i, ac_key in enumerate(keys_with_data):
+                asset_zscores[ac_key][pkey] = round((vals[i] - mean) / stdev, 2)
+        # 不足データの資産はNone
+        for ac_key in ASSET_CLASSES:
+            if pkey not in asset_zscores[ac_key]:
+                asset_zscores[ac_key][pkey] = None
+
+    # 複合zスコア
+    composite_z: dict[str, float | None] = {}
+    for ac_key in ASSET_CLASSES:
+        total_w = 0.0
+        weighted_sum = 0.0
+        for pkey, w in weights.items():
+            z = asset_zscores[ac_key].get(pkey)
+            if z is not None:
+                weighted_sum += z * w
+                total_w += w
+        composite_z[ac_key] = round(weighted_sum / total_w, 2) if total_w > 0 else None
+
+    # フローラベル
+    def _flow_label(z: float | None) -> str:
+        if z is None:
+            return "データ不足"
+        for threshold, label in _FLOW_LABELS:
+            if threshold is None or z >= threshold:
+                return label
+        return "強い流出"
+
+    # レジームマトリクス
+    regime_matrix = _compute_regime_asset_matrix()
+
+    # 現在レジーム
+    regime_info = _detect_market_regime()
+    current_regime = regime_info.get("regime", "range_bound")
+
+    # 結果組み立て
+    assets = {}
+    for ac_key, ac_info in ASSET_CLASSES.items():
+        cz = composite_z.get(ac_key)
+        assets[ac_key] = {
+            "label": ac_info["label"],
+            "emoji": ac_info["emoji"],
+            "current_values": asset_current.get(ac_key, {}),
+            "returns": asset_returns.get(ac_key, {}),
+            "z_scores": asset_zscores.get(ac_key, {}),
+            "composite_z": cz,
+            "flow_label": _flow_label(cz),
+            "sparkline": asset_sparklines.get(ac_key, []),
+        }
+
+    # 個別暗号資産詳細
+    crypto_detail = _compute_crypto_detail(ticker_series)
+
+    # 先物OI / ボリューム
+    futures_info = _compute_futures_info()
+
+    return {
+        "assets": assets,
+        "regime_matrix": regime_matrix,
+        "current_regime": current_regime,
+        "regime_ja": regime_info.get("regime_ja", ""),
+        "crypto_detail": crypto_detail,
+        "futures": futures_info,
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
+def _compute_crypto_detail(ticker_series: dict[str, list[dict]] | None = None) -> dict:
+    """個別暗号資産の価格・出来高・変化率を返す"""
+    CRYPTO_TOKENS = {
+        "btc":  {"label": "Bitcoin",    "symbol": "BTC",  "emoji": "\u20bf"},
+        "eth":  {"label": "Ethereum",   "symbol": "ETH",  "emoji": "\u039e"},
+        "bnb":  {"label": "BNB",        "symbol": "BNB",  "emoji": "\U0001f536"},
+        "sol":  {"label": "Solana",     "symbol": "SOL",  "emoji": "\u2600\ufe0f"},
+        "hype": {"label": "Hyperliquid","symbol": "HYPE", "emoji": "\U0001f680"},
+    }
+    STABLECOINS = {
+        "usdt": {"label": "USDT (Tether)", "symbol": "USDT"},
+        "usdc": {"label": "USDC (Circle)", "symbol": "USDC"},
+    }
+
+    result: dict[str, dict] = {}
+
+    # トークン価格と出来高
+    for key, meta in {**CRYPTO_TOKENS, **STABLECOINS}.items():
+        # 価格データ
+        if ticker_series and key in ticker_series:
+            series = ticker_series[key]
+        else:
+            series = _get_macro_history(key, 250)
+
+        price = series[-1]["value"] if series else None
+        # 日次リターン
+        ret_1d = None
+        if len(series) >= 2 and series[-2]["value"] and series[-2]["value"] != 0:
+            ret_1d = round((series[-1]["value"] - series[-2]["value"]) / series[-2]["value"] * 100, 2)
+        # 週次リターン
+        ret_1w = None
+        if len(series) >= 6 and series[-6]["value"] and series[-6]["value"] != 0:
+            ret_1w = round((series[-1]["value"] - series[-6]["value"]) / series[-6]["value"] * 100, 2)
+        # 月次リターン
+        ret_1m = None
+        if len(series) >= 22 and series[-22]["value"] and series[-22]["value"] != 0:
+            ret_1m = round((series[-1]["value"] - series[-22]["value"]) / series[-22]["value"] * 100, 2)
+
+        # 出来高データ
+        vol_series = _get_macro_history(f"{key}_vol", 60)
+        vol_24h = vol_series[-1]["value"] if vol_series else None
+        # 出来高7日平均
+        vol_7d_avg = None
+        vol_change_7d = None
+        if len(vol_series) >= 8:
+            recent_7 = [v["value"] for v in vol_series[-8:-1]]
+            vol_7d_avg = round(sum(recent_7) / len(recent_7), 0)
+            if vol_7d_avg and vol_7d_avg > 0 and vol_24h:
+                vol_change_7d = round((vol_24h - vol_7d_avg) / vol_7d_avg * 100, 1)
+
+        # Sparkline (30日)
+        spark = []
+        if len(series) >= 2:
+            spark_data = [r["value"] for r in series[-30:]]
+            base = spark_data[0] if spark_data[0] != 0 else 1
+            spark = [round(v / base * 100, 2) for v in spark_data]
+
+        is_stable = key in STABLECOINS
+        entry = {
+            "label": meta["label"],
+            "symbol": meta["symbol"],
+            "is_stablecoin": is_stable,
+            "price": price,
+            "change_1d": ret_1d,
+            "change_1w": ret_1w,
+            "change_1m": ret_1m,
+            "volume_24h": vol_24h,
+            "volume_7d_avg": vol_7d_avg,
+            "volume_change_7d": vol_change_7d,
+            "sparkline": spark,
+        }
+        if not is_stable:
+            entry["emoji"] = meta.get("emoji", "")
+        result[key] = entry
+
+    # ステーブルコイン合計出来高（crypto市場への資金流入プロキシ）
+    usdt_vol = result.get("usdt", {}).get("volume_24h") or 0
+    usdc_vol = result.get("usdc", {}).get("volume_24h") or 0
+    stable_total = usdt_vol + usdc_vol
+    usdt_avg = result.get("usdt", {}).get("volume_7d_avg") or 0
+    usdc_avg = result.get("usdc", {}).get("volume_7d_avg") or 0
+    stable_avg = usdt_avg + usdc_avg
+    stable_change = round((stable_total - stable_avg) / stable_avg * 100, 1) if stable_avg > 0 else None
+
+    result["_stablecoin_summary"] = {
+        "total_volume_24h": stable_total,
+        "avg_volume_7d": stable_avg,
+        "volume_change_pct": stable_change,
+        "interpretation": "資金流入増" if (stable_change or 0) > 10 else
+                          "資金流入" if (stable_change or 0) > 0 else
+                          "資金流出" if (stable_change or 0) > -10 else "資金流出増",
+    }
+
+    return result
+
+
+def _compute_futures_info() -> dict:
+    """BTC先物のボリュームと価格データ（OIプロキシ）"""
+    series = _get_macro_history("btc_f", 250)
+    vol_series = _get_macro_history("btc_f_vol", 60)
+
+    if not series:
+        return {"available": False}
+
+    price = series[-1]["value"] if series else None
+    # スポットとの乖離（先物プレミアム）
+    spot_series = _get_macro_history("btc", 10)
+    spot_price = spot_series[-1]["value"] if spot_series else None
+    premium_pct = None
+    if price and spot_price and spot_price > 0:
+        premium_pct = round((price - spot_price) / spot_price * 100, 2)
+
+    vol_24h = vol_series[-1]["value"] if vol_series else None
+    vol_7d_avg = None
+    vol_change = None
+    if len(vol_series) >= 8:
+        recent_7 = [v["value"] for v in vol_series[-8:-1]]
+        vol_7d_avg = round(sum(recent_7) / len(recent_7), 0)
+        if vol_7d_avg and vol_7d_avg > 0 and vol_24h:
+            vol_change = round((vol_24h - vol_7d_avg) / vol_7d_avg * 100, 1)
+
+    # Sparkline (先物出来高推移 30日)
+    vol_spark = []
+    if len(vol_series) >= 2:
+        vol_spark = [v["value"] for v in vol_series[-30:]]
+        mx = max(vol_spark) if vol_spark else 1
+        if mx > 0:
+            vol_spark = [round(v / mx * 100, 2) for v in vol_spark]
+
+    return {
+        "available": True,
+        "price": price,
+        "spot_price": spot_price,
+        "premium_pct": premium_pct,
+        "volume_24h": vol_24h,
+        "volume_7d_avg": vol_7d_avg,
+        "volume_change_pct": vol_change,
+        "volume_sparkline": vol_spark,
+        "interpretation": "OI増 (強気)" if (vol_change or 0) > 15 else
+                          "OI安定" if (vol_change or 0) > -15 else "OI減 (弱気)",
+    }
+
+
+def _compute_regime_asset_matrix() -> dict[str, dict[str, float]]:
+    """過去のレジーム期間ごとに各資産クラスの平均リターンを集計"""
+    with get_db() as conn:
+        regimes = conn.execute(
+            "SELECT date, regime FROM market_regimes ORDER BY date"
+        ).fetchall()
+
+    if len(regimes) < 10:
+        return _REGIME_ASSET_FALLBACK
+
+    # レジーム期間ごとのリターン集計
+    regime_returns: dict[str, dict[str, list[float]]] = {
+        r: {ac: [] for ac in ASSET_CLASSES} for r in _REGIME_ASSET_FALLBACK
+    }
+
+    # 各資産のデイリー値を取得
+    ticker_series: dict[str, dict[str, float]] = {}  # ticker -> {date: value}
+    all_tickers = set()
+    for ac in ASSET_CLASSES.values():
+        all_tickers.update(ac["tickers"])
+    for t in all_tickers:
+        data = _get_macro_history(t, 500)
+        if data:
+            ticker_series[t] = {d["date"]: d["value"] for d in data}
+
+    # 各レジーム日付ペアでリターン計算
+    for i in range(1, len(regimes)):
+        prev_date = regimes[i - 1]["date"]
+        curr_date = regimes[i]["date"]
+        regime = regimes[i - 1]["regime"]
+        if regime not in regime_returns:
+            continue
+
+        for ac_key, ac_info in ASSET_CLASSES.items():
+            rets_for_ac = []
+            for t in ac_info["tickers"]:
+                ts = ticker_series.get(t, {})
+                v_prev = ts.get(prev_date)
+                v_curr = ts.get(curr_date)
+                if v_prev and v_curr and v_prev != 0:
+                    rets_for_ac.append((v_curr - v_prev) / v_prev * 100)
+            if rets_for_ac:
+                import statistics
+                regime_returns[regime][ac_key].append(statistics.mean(rets_for_ac))
+
+    # 平均月次リターンに変換
+    result: dict[str, dict[str, float]] = {}
+    for regime, assets in regime_returns.items():
+        result[regime] = {}
+        for ac_key, rets in assets.items():
+            if rets:
+                import statistics
+                result[regime][ac_key] = round(statistics.mean(rets), 2)
+            else:
+                result[regime][ac_key] = _REGIME_ASSET_FALLBACK.get(regime, {}).get(ac_key, 0.0)
+
+    return result
+
+
+@app.get("/api/regime/capital-flow")
+def regime_capital_flow_api(request: Request):
+    _get_current_user(request)
+    return _compute_capital_flows()
 
 
 # --------------- 日本株トレンドモデル + 業種別モデル ---------------

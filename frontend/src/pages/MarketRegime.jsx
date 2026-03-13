@@ -22,7 +22,7 @@ const INDICATOR_META = {
   sp500:     { label: 'S&P 500', fmt: v => v?.toLocaleString('en', { maximumFractionDigits: 0 }) },
 }
 
-const TABS = ['推奨戦略', 'ブレイクアウト', 'バックテスト', 'レジーム履歴']
+const TABS = ['推奨戦略', 'ブレイクアウト', 'バックテスト', 'レジーム履歴', '資産フロー']
 
 const ALLOC_LABELS = {
   stocks: '株式', bonds_long: '長期債', bonds_mid: '中期債',
@@ -441,6 +441,337 @@ function RegimeHistoryTab() {
   )
 }
 
+// ─── 資産フロー（Capital Flow）タブ ─────────────────
+
+const FLOW_COLORS = {
+  '強い流入': { color: '#22c55e', bg: 'rgba(34,197,94,.15)' },
+  '流入':     { color: '#4ade80', bg: 'rgba(74,222,128,.12)' },
+  '中立':     { color: '#f59e0b', bg: 'rgba(245,158,11,.12)' },
+  '流出':     { color: '#f87171', bg: 'rgba(248,113,113,.12)' },
+  '強い流出': { color: '#ef4444', bg: 'rgba(239,68,68,.15)' },
+  'データ不足': { color: '#6b7280', bg: 'rgba(107,114,128,.1)' },
+}
+
+const ASSET_ORDER = ['crypto', 'gold', 'stocks', 'oil', 'bonds']
+
+function CapitalFlowTab() {
+  const { data, loading } = useFetch(() => api.regimeCapitalFlow(), [])
+  const isMobile = useIsMobile()
+
+  if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>資産フローデータ読み込み中...</div>
+  if (!data?.assets) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>データなし</div>
+
+  const { assets, regime_matrix, current_regime, regime_ja, crypto_detail, futures } = data
+  const sorted = ASSET_ORDER.filter(k => assets[k]).map(k => ({ key: k, ...assets[k] }))
+
+  // 個別暗号資産トークン (ステーブルコイン除く、価格データありのみ)
+  const cryptoTokens = crypto_detail
+    ? Object.entries(crypto_detail).filter(([k, v]) => k !== '_stablecoin_summary' && !v.is_stablecoin && v.price != null)
+    : []
+  const stableSummary = crypto_detail?._stablecoin_summary
+  const stableEntries = crypto_detail
+    ? Object.entries(crypto_detail).filter(([k, v]) => k !== '_stablecoin_summary' && v.is_stablecoin)
+    : []
+
+  const fmtVol = (v) => {
+    if (v == null) return '—'
+    if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`
+    if (v >= 1e6) return `$${(v / 1e6).toFixed(0)}M`
+    return `$${v.toLocaleString('en', { maximumFractionDigits: 0 })}`
+  }
+
+  return (
+    <div>
+      {/* ─── 暗号資産 個別トークン ─── */}
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+        {cryptoTokens.map(([key, tok]) => (
+          <div key={key} style={{
+            background: 'var(--surface)', borderRadius: 10, padding: isMobile ? 12 : 14,
+            border: '1px solid var(--border)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{tok.emoji} {tok.symbol}</div>
+                <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, marginTop: 2 }}>
+                  {tok.price != null ? (tok.price >= 100 ? `$${tok.price.toLocaleString('en', { maximumFractionDigits: 0 })}` : `$${tok.price.toFixed(2)}`) : '—'}
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 3, flexWrap: 'wrap' }}>
+                  {tok.change_1d != null && (
+                    <span style={{ fontSize: 10, color: tok.change_1d >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      24h {tok.change_1d >= 0 ? '+' : ''}{tok.change_1d}%
+                    </span>
+                  )}
+                  {tok.change_1w != null && (
+                    <span style={{ fontSize: 10, color: tok.change_1w >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      7d {tok.change_1w >= 0 ? '+' : ''}{tok.change_1w}%
+                    </span>
+                  )}
+                </div>
+                {tok.volume_24h != null && (
+                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 3 }}>
+                    Vol: {fmtVol(tok.volume_24h)}
+                    {tok.volume_change_7d != null && (
+                      <span style={{ color: tok.volume_change_7d >= 0 ? '#4ade80' : '#f87171', marginLeft: 4 }}>
+                        {tok.volume_change_7d >= 0 ? '+' : ''}{tok.volume_change_7d}%
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              {!isMobile && tok.sparkline?.length > 1 && (
+                <div style={{ width: 70, marginLeft: 6 }}>
+                  <Sparkline data={tok.sparkline} height={30} />
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ─── ステーブルコイン流量 + 先物OI ─── */}
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 10, marginBottom: 20 }}>
+        {/* ステーブルコイン */}
+        <div style={{ background: 'var(--surface)', borderRadius: 10, padding: 14, border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>💵 ステーブルコイン出来高</div>
+          {stableEntries.map(([key, s]) => (
+            <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, fontSize: 12 }}>
+              <span style={{ color: 'var(--text-dim)' }}>{s.symbol}</span>
+              <span>
+                {fmtVol(s.volume_24h)}
+                {s.volume_change_7d != null && (
+                  <span style={{ fontSize: 10, marginLeft: 6, color: s.volume_change_7d >= 0 ? '#4ade80' : '#f87171' }}>
+                    {s.volume_change_7d >= 0 ? '▲' : '▼'}{Math.abs(s.volume_change_7d)}%
+                  </span>
+                )}
+              </span>
+            </div>
+          ))}
+          {stableSummary && (
+            <div style={{
+              marginTop: 8, padding: '6px 10px', borderRadius: 6, fontSize: 11,
+              background: (stableSummary.volume_change_pct || 0) > 0 ? 'rgba(34,197,94,.1)' : 'rgba(239,68,68,.1)',
+              color: (stableSummary.volume_change_pct || 0) > 0 ? '#4ade80' : '#f87171',
+            }}>
+              合計: {fmtVol(stableSummary.total_volume_24h)} (7d平均比 {stableSummary.volume_change_pct != null ? `${stableSummary.volume_change_pct >= 0 ? '+' : ''}${stableSummary.volume_change_pct}%` : '—'})
+              <span style={{ marginLeft: 6 }}>→ {stableSummary.interpretation}</span>
+            </div>
+          )}
+        </div>
+
+        {/* 先物OI */}
+        <div style={{ background: 'var(--surface)', borderRadius: 10, padding: 14, border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>📊 BTC先物 (CME)</div>
+          {futures?.available ? (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: 'var(--text-dim)' }}>先物価格</span>
+                <span style={{ fontWeight: 600 }}>{futures.price ? `$${futures.price.toLocaleString('en', { maximumFractionDigits: 0 })}` : '—'}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: 'var(--text-dim)' }}>スポット乖離</span>
+                <span style={{ fontWeight: 600, color: (futures.premium_pct || 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {futures.premium_pct != null ? `${futures.premium_pct >= 0 ? '+' : ''}${futures.premium_pct}%` : '—'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: 'var(--text-dim)' }}>出来高 (24h)</span>
+                <span>{fmtVol(futures.volume_24h)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: 'var(--text-dim)' }}>出来高変化 (7d)</span>
+                <span style={{ color: (futures.volume_change_pct || 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                  {futures.volume_change_pct != null ? `${futures.volume_change_pct >= 0 ? '+' : ''}${futures.volume_change_pct}%` : '—'}
+                </span>
+              </div>
+              {futures.volume_sparkline?.length > 1 && (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>出来高推移 (30日)</div>
+                  <Sparkline data={futures.volume_sparkline} height={24} />
+                </div>
+              )}
+              <div style={{
+                marginTop: 8, padding: '5px 10px', borderRadius: 6, fontSize: 11, textAlign: 'center',
+                background: futures.interpretation?.includes('強気') ? 'rgba(34,197,94,.1)' : futures.interpretation?.includes('弱気') ? 'rgba(239,68,68,.1)' : 'rgba(245,158,11,.1)',
+                color: futures.interpretation?.includes('強気') ? '#4ade80' : futures.interpretation?.includes('弱気') ? '#ef4444' : '#f59e0b',
+              }}>
+                {futures.interpretation}
+              </div>
+            </>
+          ) : (
+            <div style={{ color: 'var(--text-dim)', fontSize: 12, padding: 8 }}>データ収集中...</div>
+          )}
+        </div>
+      </div>
+
+      {/* ─── 資産クラス別パフォーマンス ─── */}
+      <div style={{ background: 'var(--surface)', borderRadius: 10, padding: 16, marginBottom: 20, overflowX: 'auto' }}>
+        <h3 style={{ fontSize: 14, margin: '0 0 12px', color: 'var(--text)' }}>資産クラス別パフォーマンス</h3>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 500 }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid var(--border)', fontSize: 11, color: 'var(--text-dim)' }}>
+              <th style={{ textAlign: 'left', padding: '6px 8px' }}>資産</th>
+              <th style={{ textAlign: 'right', padding: '6px 8px' }}>1W</th>
+              <th style={{ textAlign: 'right', padding: '6px 8px' }}>1M</th>
+              <th style={{ textAlign: 'right', padding: '6px 8px' }}>3M</th>
+              <th style={{ textAlign: 'right', padding: '6px 8px' }}>6M</th>
+              <th style={{ textAlign: 'center', padding: '6px 8px' }}>フロー</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(a => {
+              const fc = FLOW_COLORS[a.flow_label] || FLOW_COLORS['データ不足']
+              return (
+                <tr key={a.key} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '8px', fontWeight: 600 }}>
+                    <span style={{ marginRight: 6 }}>{a.emoji}</span>{a.label}
+                  </td>
+                  {['1w', '1m', '3m', '6m'].map(p => {
+                    const v = a.returns?.[p]
+                    return (
+                      <td key={p} style={{
+                        textAlign: 'right', padding: '8px',
+                        color: v == null ? 'var(--text-dim)' : v >= 0 ? 'var(--green)' : 'var(--red)',
+                        fontWeight: 600,
+                      }}>
+                        {v != null ? `${v >= 0 ? '+' : ''}${v}%` : '—'}
+                      </td>
+                    )
+                  })}
+                  <td style={{ textAlign: 'center', padding: '8px' }}>
+                    <span style={{
+                      display: 'inline-block', padding: '2px 10px', borderRadius: 10,
+                      fontSize: 11, fontWeight: 600,
+                      background: fc.bg, color: fc.color,
+                    }}>{a.flow_label}</span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ─── フローレーダー（横棒グラフ） ─── */}
+      <div style={{ background: 'var(--surface)', borderRadius: 10, padding: 16, marginBottom: 20 }}>
+        <h3 style={{ fontSize: 14, margin: '0 0 12px', color: 'var(--text)' }}>フローレーダー</h3>
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12 }}>
+          複合Zスコア — 5資産間の相対的な資金流入/流出強度
+        </div>
+        {sorted.map(a => {
+          const z = a.composite_z ?? 0
+          const maxAbs = 2.5
+          const pct = Math.min(Math.abs(z) / maxAbs * 50, 50)
+          const isPositive = z >= 0
+          const barColor = z >= 1.0 ? '#22c55e' : z >= 0.5 ? '#4ade80' : z >= -0.5 ? '#f59e0b' : z >= -1.0 ? '#f87171' : '#ef4444'
+          return (
+            <div key={a.key} style={{ display: 'flex', alignItems: 'center', marginBottom: 8, gap: 8 }}>
+              <div style={{ width: 80, fontSize: 12, textAlign: 'right', flexShrink: 0 }}>
+                {a.emoji} {a.label}
+              </div>
+              <div style={{ flex: 1, height: 20, background: 'var(--bg)', borderRadius: 4, position: 'relative', overflow: 'hidden' }}>
+                {/* Center line */}
+                <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: 'var(--border)' }} />
+                {/* Bar */}
+                <div style={{
+                  position: 'absolute',
+                  top: 2, bottom: 2, borderRadius: 3,
+                  background: barColor,
+                  ...(isPositive
+                    ? { left: '50%', width: `${pct}%` }
+                    : { right: '50%', width: `${pct}%` }),
+                }} />
+              </div>
+              <div style={{ width: 40, fontSize: 12, fontWeight: 700, color: barColor, textAlign: 'right', flexShrink: 0 }}>
+                {z != null ? (z >= 0 ? '+' : '') + z.toFixed(1) : '—'}
+              </div>
+            </div>
+          )
+        })}
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)', marginTop: 4, padding: '0 88px 0 88px' }}>
+          <span>← 流出</span>
+          <span>中立</span>
+          <span>流入 →</span>
+        </div>
+      </div>
+
+      {/* ─── レジーム × 資産クラス マトリクス ─── */}
+      {regime_matrix && (
+        <div style={{ background: 'var(--surface)', borderRadius: 10, padding: 16, overflowX: 'auto' }}>
+          <h3 style={{ fontSize: 14, margin: '0 0 4px', color: 'var(--text)' }}>レジーム × 資産クラス マトリクス</h3>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12 }}>
+            各局面での資産クラス平均月次リターン (%)
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 480 }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid var(--border)', fontSize: 11, color: 'var(--text-dim)' }}>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>局面</th>
+                {ASSET_ORDER.filter(k => assets[k]).map(k => (
+                  <th key={k} style={{ textAlign: 'center', padding: '6px 8px' }}>
+                    {assets[k].emoji} {assets[k].label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(REGIME_META).map(([rKey, rMeta]) => {
+                const row = regime_matrix[rKey]
+                if (!row) return null
+                const isCurrentRegime = rKey === current_regime
+                return (
+                  <tr key={rKey} style={{
+                    borderBottom: '1px solid var(--border)',
+                    background: isCurrentRegime ? 'rgba(245,158,11,.08)' : 'transparent',
+                  }}>
+                    <td style={{ padding: '8px', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      <span style={{ color: rMeta.color }}>{rMeta.icon}</span>{' '}
+                      <span style={{ color: isCurrentRegime ? 'var(--accent)' : 'var(--text)' }}>{rMeta.label}</span>
+                      {isCurrentRegime && <span style={{ fontSize: 9, color: 'var(--accent)', marginLeft: 4 }}>NOW</span>}
+                    </td>
+                    {ASSET_ORDER.filter(k => assets[k]).map(k => {
+                      const v = row[k]
+                      const cellColor = v == null ? 'var(--text-dim)' : v >= 1 ? '#22c55e' : v <= -1 ? '#ef4444' : '#f59e0b'
+                      return (
+                        <td key={k} style={{
+                          textAlign: 'center', padding: '8px',
+                          color: cellColor, fontWeight: 600,
+                        }}>
+                          {v != null ? `${v >= 0 ? '+' : ''}${v}%` : '—'}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {current_regime && (
+            <div style={{
+              marginTop: 12, padding: '10px 14px', borderRadius: 8,
+              background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.2)',
+              fontSize: 13,
+            }}>
+              現在の局面: <b style={{ color: 'var(--accent)' }}>{regime_ja || REGIME_META[current_regime]?.label}</b>
+              {(() => {
+                const row = regime_matrix[current_regime]
+                if (!row) return null
+                const best = ASSET_ORDER
+                  .filter(k => row[k] != null)
+                  .sort((a, b) => (row[b] ?? 0) - (row[a] ?? 0))
+                  .slice(0, 2)
+                  .map(k => assets[k]?.label)
+                  .filter(Boolean)
+                return best.length > 0 ? (
+                  <span> → 歴史的に <b style={{ color: 'var(--green)' }}>{best.join('・')}</b> に有利</span>
+                ) : null
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── メインページ ───────────────────────────────────
 export default function MarketRegime() {
   const isMobile = useIsMobile()
@@ -494,6 +825,7 @@ export default function MarketRegime() {
         {tab === 1 && <BreakoutTable breakouts={breakoutData?.breakouts} />}
         {tab === 2 && <BacktestTab />}
         {tab === 3 && <RegimeHistoryTab />}
+        {tab === 4 && <CapitalFlowTab />}
 
         {/* Strategy detail modal */}
         <StrategyDetail strategyId={selectedStrategy} onClose={() => setSelectedStrategy(null)} />
